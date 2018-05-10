@@ -15,6 +15,7 @@ from subprocess import Popen, PIPE
 
 #%%
 
+path_to_vrep = '/home/greg/V-REP_PRO_EDU_V3_5_0_Linux'
 scene_name = 'epuck_UI_edit3'
 headless = True
 start_sim = True
@@ -29,9 +30,9 @@ if start_sim:
 
 vrep.simxFinish(-1) # just in case, close all opened connections
 
-process = Popen(["../V-REP_PRO_EDU_V3_5_0_Linux/vrep.sh", f"{head_call}", f"{start_sim_call}", "-q",
+process = Popen([f"{path_to_vrep}/vrep.sh", f"{head_call}", f"{start_sim_call}", "-q",
                  "-gREMOTEAPISERVERSERVICE_19999_FALSE_FALSE", 
-                 f"../V-REP_PRO_EDU_V3_5_0_Linux/scenes/greg_scenes/{scene_name}.ttt"], stdout=PIPE, stderr=PIPE)
+                 f"{path_to_vrep}/scenes/greg_scenes/{scene_name}.ttt"], stdout=PIPE, stderr=PIPE)
 #stdout, stderr = process.communicate()
 #print(stdout)
     
