@@ -72,66 +72,120 @@ def initialise_vrep(scene_name: 'str',
         sys.exit('Could not connect')
         
     return clientID
-        
-    
-#%% Main script
-    
-    # initialise vrep
-    clientID = initialise_vrep('epuck_arena_test2', 19999, False, False, 0, False)
 
-#%% Get all object handles
 
-    returnCode, handles, intData, floatData, stringData = vrep.simxGetObjectGroupData(
-            clientID, vrep.sim_appobj_object_type, 0, vrep.simx_opmode_blocking)
-    
-    for i in range(len(handles)):
-        exec(stringData[i] + f"={handles[i]}")
-    
-#%% Get ePuck position
-
-    # initialise position and orientation readings
-    returnCode, pos = vrep.simxGetObjectPosition(
-            clientID, ePuck, -1, vrep.simx_opmode_streaming)
-    
-    returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-            clientID, ePuck, -1, vrep.simx_opmode_streaming)
-    
-    # time required before second call otherwise it returns [0,0,0]
-    time.sleep(1)
-    
-    returnCode, pos = vrep.simxGetObjectPosition(
-            clientID, ePuck, -1, vrep.simx_opmode_buffer)
-    
-    returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-            clientID, ePuck, -1, vrep.simx_opmode_buffer)
-    
-    # check that position is not still [0,0,0]
-    print(pos)
-    print(eulerAngles)
-    
 #%% Set ePuck position, orientation and velocity
 
-    pos_init = [1, 0.5, pos[2]] # initial position of ePuck
+def set_pos_ang_vel(clientID: 'int',
+                    handle: 'int',
+                    position: '[x y z] metres',
+                    angle: 'degrees',
+                    linear_velocity: 'm/s',
+                    angular_velocity: 'deg/sec'):
     
-    ang_init = 90 # angle of ePuck from the x-axis (deg)
+    # Convert deg to rad
+    ang_vel_rad = angular_velocity*math.pi/180
     
-    v_des = 2 # initial velocity
+    # ePuck geometric parameters
+    wheel_sep = 0.053   # distance between wheels (m)
+    wheel_rad = 0.02    # radius of wheels (m)
     
     # Set position
     returnCode = vrep.simxSetObjectPosition(
-            clientID, ePuck, -1, pos_init, vrep.simx_opmode_oneshot)
+            clientID, handle, -1, position, vrep.simx_opmode_oneshot)
     
     # Convert angle to euler angle
-    eulerAngles = [0, 0, ang_init*math.pi/180]
+    eulerAngles = [0, 0, angle*math.pi/180]
     
     # Set orientation
     returnCode = vrep.simxSetObjectOrientation(
-            clientID, ePuck, -1, eulerAngles, vrep.simx_opmode_oneshot)
+            clientID, handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
+    
+    # Convert to wheel velocities
+    vel_r = linear_velocity - wheel_sep*ang_vel_rad/2
+    vel_l = linear_velocity + wheel_sep*ang_vel_rad/2
+    
+    # Convert to wheel angular veolocities
+    omega_r = vel_r/wheel_rad
+    omega_l = vel_l/wheel_rad
     
     vrep.simxSetJointTargetVelocity(
-            clientID, ePuck_leftJoint, v_des, vrep.simx_opmode_streaming)
+            clientID, ePuck_leftJoint, omega_r, vrep.simx_opmode_streaming)
+    
+    vrep.simxSetJointTargetVelocity(
+            clientID, ePuck_rightJoint, omega_l, vrep.simx_opmode_streaming)
 
-    vrep.simxSetJointTargetVelocity(
-            clientID, ePuck_rightJoint, v_des, vrep.simx_opmode_streaming)
     
+#%% Main script
+
+answer = 0
+while answer == 0:
     
+    start_vrep = input("Start a new vrep session, y/n? ")
+    if start_vrep == 'y':
+        # initialise vrep
+        clientID = initialise_vrep('epuck_arena_test2', 19999, False, False, 0, False)
+        answer = 1
+    elif start_vrep == 'n':
+        clientID = 0
+        answer = 1
+    else:
+        print("please type 'y' to start vrep or 'n' to use open vrep program\n")            
+            
+#%% Get all object handles
+
+returnCode, handles, intData, floatData, stringData = vrep.simxGetObjectGroupData(
+        clientID, vrep.sim_appobj_object_type, 0, vrep.simx_opmode_blocking)
+
+for i in range(len(handles)):
+    exec(stringData[i] + f"={handles[i]}")
+    
+#%% Get ePuck position
+
+# initialise position and orientation readings
+returnCode, pos = vrep.simxGetObjectPosition(
+        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+
+returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+
+# time required before second call otherwise it returns [0,0,0]
+time.sleep(1)
+
+returnCode, pos = vrep.simxGetObjectPosition(
+        clientID, ePuck, -1, vrep.simx_opmode_buffer)
+
+returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+        clientID, ePuck, -1, vrep.simx_opmode_buffer)
+
+# check that position is not still [0,0,0]
+print(pos)
+print(eulerAngles)
+
+#%% Set initial posiition, orientation and velocity parameters of the ePuck
+
+pos_init = [0.5, 1, 0.01915] # initial position of ePuck
+ang_init = 0 # angle of ePuck from the x-axis (deg)
+vel_init = 0.2 # initial linear velocity (m/s)
+ang_vel_init = 0 # initial angular velocity (deg/sec)
+    
+set_pos_ang_vel(clientID, ePuck, pos_init, ang_init, vel_init, ang_vel_init)
+
+#%% Run simulation
+
+#
+returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+
+returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
+        clientID, ePuck, vrep.simx_opmode_streaming)
+
+time.sleep(4)
+
+returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
+        clientID, ePuck, vrep.simx_opmode_buffer)
+
+cmdTime = vrep.simxGetLastCmdTime(clientID)
+
+print(linearVelocity)
+print(angularVelocity)
+
