@@ -28,6 +28,7 @@ def initialise_vrep(scene_name: 'str',
     
     # Defines path to VREP folder
     path_to_vrep = '/home/greg/V-REP_PRO_EDU_V3_5_0_Linux'
+    path_to_scenes = '../vrep_scenes/greg_scenes'
     
     # Converts vrep initialisation settings to arguments recognised by vrep
     head_call = ''
@@ -55,7 +56,7 @@ def initialise_vrep(scene_name: 'str',
     # Command-line call to initialise vrep
     Popen(["nice", "-n", "-20", f"{path_to_vrep}/vrep.sh", head_call, start_sim_call, quit_after_sim,
            f"-gREMOTEAPISERVERSERVICE_{vrep_port}_FALSE_FALSE", 
-           f"{path_to_vrep}/scenes/greg_scenes/{scene_name}.ttt",
+           f"{path_to_scenes}/{scene_name}.ttt",
            '--display:=0'], 
             stdout=PIPE, stderr=PIPE)
     
