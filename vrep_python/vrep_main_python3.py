@@ -11,7 +11,8 @@ Created on Thu May 10 19:58:44 2018
 import vrep
 import sys
 import numpy as np
-import matplotlib.pyplot as mlp
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import time
 import math
 from subprocess import Popen, PIPE
@@ -27,8 +28,8 @@ def initialise_vrep(scene_name: 'str',
                     quit_vrep_after_sim: 'bool'):
     
     # Defines path to VREP folder
-    path_to_vrep = '/home/greg/V-REP_PRO_EDU_V3_5_0_Linux'
-    path_to_scenes = '../vrep_scenes/greg_scenes'
+    path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
+    path_to_scenes = '../vrep_scenes/test_scenes'
     
     # Converts vrep initialisation settings to arguments recognised by vrep
     head_call = ''
@@ -45,7 +46,7 @@ def initialise_vrep(scene_name: 'str',
         else:
             raise ValueError('''sim_time (simulation duration) must be a 
                              positive number, or zero for no time limit''')
-            
+           
     quit_after_sim = ''
     if quit_vrep_after_sim:
         quit_after_sim = '-q'
@@ -117,6 +118,12 @@ def set_pos_ang_vel(clientID: 'int',
     
     vrep.simxSetJointTargetVelocity(
             clientID, handle_rightJoint, omega_l, vrep.simx_opmode_streaming)
+    
+#%% Updating plot
+    
+def animate(i):
+    ax1.clear()
+    ax1.plot(cmdTimeAll,forceMagAll)
 
     
 #%% Main script
@@ -124,12 +131,12 @@ def set_pos_ang_vel(clientID: 'int',
 answer = 0
 while answer == 0:
     
+    start_sim = False
     start_vrep = input("Start a new vrep session, y/n? ")
     if start_vrep == 'y':
         # initialise vrep
         headless = False
         quit_after_sim = False
-        start_sim = False
         sim_time = 0
         
         headless_yn = input("Headless? y/n ")
@@ -139,12 +146,12 @@ while answer == 0:
             if start_sim_yn == 'y':
                 start_sim = True
             quit_after_sim_yn = input("Quit V-REP after the simulation? y/n ")
-            sim_time = ('Enter the duration of the simulation (seconds): ')
+            sim_time = int(input('Enter the duration of the simulation (seconds): '))
             if quit_after_sim_yn == 'y':
                 quit_after_sim = True
         
         clientID = initialise_vrep(
-                'epuck_arena_dr12', 19999, headless, start_sim, sim_time, quit_after_sim)
+                    'epuck_arena_single', 19999, headless, start_sim, sim_time, quit_after_sim)
         answer = 1
     elif start_vrep == 'n':
         clientID = 0
@@ -154,6 +161,8 @@ while answer == 0:
             
 #%% Get all object handles
 
+ts1 = time.time()
+
 returnCode, handles, intData, floatData, stringData = vrep.simxGetObjectGroupData(
         clientID, vrep.sim_appobj_object_type, 0, vrep.simx_opmode_blocking)
 
@@ -162,29 +171,26 @@ for i in range(len(handles)):
     
 #%% Get ePuck position
 
-# initialise position and orientation readings
-returnCode, pos = vrep.simxGetObjectPosition(
-        clientID, ePuck, -1, vrep.simx_opmode_streaming)
-True
-returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+## initialise position and orientation readings
+#returnCode, pos = vrep.simxGetObjectPosition(
+#        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+#
+#returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+#        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+#
+## time required before second call otherwise it returns [0,0,0]
+#time.sleep(1)
+#
+#returnCode, pos = vrep.simxGetObjectPosition(
+#        clientID, ePuck, -1, vrep.simx_opmode_buffer)
+#
+#returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+#        clientID, ePuck, -1, vrep.simx_opmode_buffer)
 
-# time required before second call otherwise it returns [0,0,0]
-time.sleep(1)
-
-returnCode, pos = vrep.simxGetObjectPosition(
-        clientID, ePuck, -1, vrep.simx_opmode_buffer)
-
-returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-        clientID, ePuck, -1, vrep.simx_opmode_buffer)
-
-# check that position is notTrue still [0,0,0]
-print(pos)
-print(eulerAngles)
 
 #%% Set initial posiition, orientation and velocity parameters of the ePuck
 
-pos_init = [0.5, 1, 0.01915] # initial position of ePuck
+pos_init = [1, 1, 0.01915] # initial position of ePuck
 ang_init = 0 # angle of ePuck from the x-axis (deg)
 vel_init = 0.2 # initial linear velocity (m/s)
 ang_vel_init = 0 # initial angular velocity (deg/sec)
@@ -193,23 +199,48 @@ set_pos_ang_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, pos_init, an
 
 #%% Run simulation
 
-returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+if start_sim != True:
+    #start_sim = input("To start the simulation, press Enter: ")
+    returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
         clientID, ePuck, vrep.simx_opmode_streaming)
 
-returnCode, force = vrep.simxGetJointForce(
+returnCode, state, forceVector, torqueVector = vrep.simxReadForceSensor(
         clientID, ePuck_link, vrep.simx_opmode_streaming)
+
+cmdTimeAll = []
+forceMagAll = []
+
+fig = plt.figure()
+ax1 = fig.add_subplot(1,1,1)
+
+ani = animation.FuncAnimation(fig, animate, interval=200)
+plt.show()
+
+time_step = 0.02
+
+for i in range(0,300):
+    returnCode, state, forceVector, torqueVector = vrep.simxReadForceSensor(
+            clientID, ePuck_link, vrep.simx_opmode_buffer)
+    forceMag = np.linalg.norm(forceVector)  
+    cmdTime = vrep.simxGetLastCmdTime(clientID)
+    
+    if forceMag < 1000:
+        forceMagAll.append(forceMag)
+        cmdTimeAll.append(cmdTime/1000)
+
+    print(f'{cmdTime} - {forceMag}')
+    if cmdTime >= 10000:
+        print(i*time_step)
+        ts2 = time.time()
+        print(ts2-ts1)
+        break
+    time.sleep(time_step)
+
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
         clientID, ePuck, vrep.simx_opmode_buffer)
-
-for i in range(1,60):
-    returnCode, force = vrep.simxGetJointForce(
-            clientID, ePuck_link, vrep.simx_opmode_buffer)
-    cmdTime = vrep.simxGetLastCmdTime(clientID)
-    print(f'{cmdTime} - {force}')
-    time.sleep(1)
     
 print(linearVelocity)
 print(angularVelocity)
