@@ -145,14 +145,16 @@ while answer == 0:
             if start_sim_yn == 'y':
                 start_sim = True
             quit_after_sim_yn = input("Quit V-REP after the simulation? y/n ")
-            sim_time = int(input('Enter the duration of the simulation (seconds): '))
             if quit_after_sim_yn == 'y':
                 quit_after_sim = True
+                
+        sim_time = int(input('Enter the duration of the simulation (seconds): '))
         
         clientID = initialise_vrep(
-                    'epuck_arena_ramps', 19999, headless, start_sim, sim_time, quit_after_sim)
+                    'epuck_arena_ramps', 19999, headless, start_sim, 0, quit_after_sim)
         answer = 1
     elif start_vrep == 'n':
+        sim_time = int(input('Enter the duration of the simulation (seconds): '))
         clientID = 0
         answer = 1
     else:
@@ -198,55 +200,72 @@ set_pos_ang_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, pos_init, an
 
 #%% Run simulation
 
-if start_sim != True:
-    start_sim = input("To start the simulation, press Enter: ")
-    returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+cmdTimeAll = []
+forceMagLinkAll = []
+forceMagRearAll = []
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
         clientID, ePuck, vrep.simx_opmode_streaming)
 
-returnCode, state, forceVector, torqueVector = vrep.simxReadForceSensor(
+returnCode, state, forceVectorLink, torqueVector = vrep.simxReadForceSensor(
         clientID, ePuck_link, vrep.simx_opmode_streaming)
 
-cmdTimeAll = []
-forceMagAll = []
+returnCode, state, forceVectorRear, torqueVector = vrep.simxReadForceSensor(
+        clientID, ePuck_rearBodySliderLink, vrep.simx_opmode_streaming)
 
-plt.close("all")
-fig = plt.figure()
-ax1 = fig.add_subplot(1,1,1)
+returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+        clientID, ePuck, -1, vrep.simx_opmode_streaming)
 
-ani = animation.FuncAnimation(fig, animate, interval=200)
-plt.show()
+if start_sim != True:
+    start_sim = input("To start the simulation, press Enter: ")
+    returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+
+#ani = animation.FuncAnimation(fig, animate, interval=200)
 
 time_step = 0.02
 
-for i in range(0,300):
-    returnCode, state, forceVector, torqueVector = vrep.simxReadForceSensor(
+for i in range(0,1000):
+    returnCode, state, forceVectorLink, torqueVector = vrep.simxReadForceSensor(
             clientID, ePuck_link, vrep.simx_opmode_buffer)
-    forceMag = np.linalg.norm(forceVector)  
+    forceMagLink = np.linalg.norm(forceVectorLink)
+    
+    returnCode, state, forceVectorRear, torqueVector = vrep.simxReadForceSensor(
+            clientID, ePuck_rearBodySliderLink, vrep.simx_opmode_buffer)
+    forceMagRear = np.linalg.norm(forceVectorRear)
+    
+    returnCode, eulerAngles = vrep.simxGetObjectOrientation(
+            clientID, ePuck, -1, vrep.simx_opmode_buffer)
+    
     cmdTime = vrep.simxGetLastCmdTime(clientID)
     
-    if forceMag < 1000:
-        forceMagAll.append(forceMag)
+    if forceMagLink + forceMagRear < 1000:
+        forceMagLinkAll.append(forceMagLink)
         cmdTimeAll.append(cmdTime/1000)
+        forceMagRearAll.append(forceMagRear)
 
-    print(f'{cmdTime} - {forceMag}')
-    if cmdTime >= 10000:
+    print(f'{cmdTime} - {forceMagLink}')
+    if cmdTime >= sim_time*1000:
         print(i*time_step)
         ts2 = time.time()
         print(ts2-ts1)
         break
-    elif forceMag > 0.8 and forceMag < 1000:
+    elif forceMagLink > 0.4 and forceMagLink < 1000:
         print('collision!')
         break
     time.sleep(time_step)
 
+# Plot force sensor graph
+fig = plt.figure()
+ax1 = fig.add_subplot(1,1,1)
+ax1.plot(cmdTimeAll,forceMagLinkAll)
+ax1.plot(cmdTimeAll,forceMagRearAll)
+plt.show()
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
         clientID, ePuck, vrep.simx_opmode_buffer)
     
 print(linearVelocity)
-print(angularVelocity)
+print(eulerAngles)
     
 returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
 
