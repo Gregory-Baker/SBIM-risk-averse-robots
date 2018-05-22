@@ -82,31 +82,35 @@ def set_pos_ang_vel(clientID: 'int',
                     handle_leftJoint: 'int', 
                     handle_rightJoint: 'int',
                     position: '[x y z] metres',
-                    angle: 'degrees',
+                    angle: 'rad',
                     linear_velocity: 'm/s',
-                    angular_velocity: 'deg/sec'):
-    
-    # Convert deg to rad
-    ang_vel_rad = angular_velocity*math.pi/180
-    
-    # ePuck geometric parameters
-    wheel_sep = 0.053   # distance between wheels (m)
-    wheel_rad = 0.02    # radius of wheels (m)
+                    angular_velocity: 'rad/sec'):
     
     # Set position
     returnCode = vrep.simxSetObjectPosition(
             clientID, handle, -1, position, vrep.simx_opmode_oneshot)
     
     # Convert angle to euler angle
-    eulerAngles = [0, 0, angle*math.pi/180]
+    eulerAngles = [0, 0, angle]
     
     # Set orientation
     returnCode = vrep.simxSetObjectOrientation(
             clientID, handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
     
+    set_vel(linear_velocity, angular_velocity)
+    
+#%% Set wheel velocities
+    
+def set_vel(linear_velocity: 'm/s',
+            angular_velocity: 'rad/sec'):
+    
+    # ePuck geometric parameters
+    wheel_sep = 0.053   # distance between wheels (m)
+    wheel_rad = 0.02    # radius of wheels (m)
+    
     # Convert to wheel velocities
-    vel_r = linear_velocity + wheel_sep*ang_vel_rad/2
-    vel_l = linear_velocity - wheel_sep*ang_vel_rad/2
+    vel_r = linear_velocity + wheel_sep*angular_velocity/2
+    vel_l = linear_velocity - wheel_sep*angular_velocity/2
     
     # Convert to wheel angular veolocities
     omega_r = vel_r/wheel_rad
@@ -174,30 +178,26 @@ for i in range(len(handles)):
     
 #%% Target
     
-xStart = 0.7
+xStart = 1
 yStart = 0.5
 
 xTarget = 1
-yTarget = 0.8
+yTarget = 1.2
+
+xDelta = xTarget - xStart
+yDelta = yTarget - yStart
 
 
 #%% Set initial posiition, orientation and velocity parameters of the ePuck
 
 pos_init = [xStart, yStart, 0.21915] # initial position of ePuck
-ang_init = 180 # angle of ePuck from the x-axis (deg)
+ang_init = math.atan2(yDelta, xDelta)+0.5 # angle of ePuck from the x-axis (rad) 
 vel_init = 0.1 # initial linear velocity (m/s)
 ang_vel_init = 0 # initial angular velocity (deg/sec)
     
 set_pos_ang_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, pos_init, ang_init, vel_init, ang_vel_init)
 
-#%% Run simulation
-
-cmdTimeAll = []
-forceMagLinkAll = []
-forceMagRearAll = []
-distAll = []
-cmdTimeProx =[]
-dist = [-1,-1,-1]
+#%% Setup streaming calls
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
         clientID, ePuck, vrep.simx_opmode_streaming)
@@ -211,99 +211,98 @@ returnCode, state, forceVectorRear, torqueVector = vrep.simxReadForceSensor(
 returnCode, eulerAngles = vrep.simxGetObjectOrientation(
         clientID, ePuck, -1, vrep.simx_opmode_streaming)
 
-returnCode, detectionState, detectedPointFront, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-        clientID, ePuck_proxFront, vrep.simx_opmode_streaming)
+returnCode, position = vrep.simxGetObjectPosition(
+        clientID, ePuck, -1, vrep.simx_opmode_streaming)
 
-returnCode, detectionState, detectedPointMid, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-        clientID, ePuck_proxMid, vrep.simx_opmode_streaming)
+#%% Initialise arrays
 
-returnCode, detectionState, detectedPointRear, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-        clientID, ePuck_proxRear, vrep.simx_opmode_streaming)
+cmdTimeAll = []
+forceMagLinkAll = []
+forceMagRearAll = []
 
-#returnCode, prop = vrep.simxGetModelProperty(
-#        clientID, ePuck, vrep.simx_opmode_streaming)
 
-returnCode = vrep.simxSetModelProperty(clientID, ePuck, 32, vrep.simx_opmode_oneshot)
+#%% Run simulation
+
+returnCode = vrep.simxSetModelProperty(clientID, ePuck, 0, vrep.simx_opmode_oneshot)
 
 
 if start_sim != True:
     start_sim = input("To start the simulation, press Enter: ")
     returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
     
-#returnCode, prop = vrep.simxGetModelProperty(
-#        clientID, ePuck, vrep.simx_opmode_buffer)
-
-#ani = animation.FuncAnimation(fig, animate, interval=200)
-
 time_step = 0.02
 
-for i in range(0,1000):
+linear_velocity = vel_init
+
+pos_start_2d = np.array([xStart, yStart])
+pos_target_2d = np.array([xTarget, yTarget])
+dist_to_target = np.linalg.norm(pos_target_2d - pos_start_2d)
+
+while dist_to_target > 0.02:
+    time.sleep(time_step)
+    
     returnCode, state, forceVectorLink, torqueVector = vrep.simxReadForceSensor(
             clientID, ePuck_link, vrep.simx_opmode_buffer)
     forceMagLink = np.linalg.norm(forceVectorLink)
     
-    returnCode, state, forceVectorRear, torqueVector = vrep.simxReadForceSensor(
-            clientID, ePuck_rearBodySliderLink, vrep.simx_opmode_buffer)
-    forceMagRear = np.linalg.norm(forceVectorRear)
-    
     returnCode, eulerAngles = vrep.simxGetObjectOrientation(
             clientID, ePuck, -1, vrep.simx_opmode_buffer)
     
-    returnCode, detectionState, detectedPointFront, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-            clientID, ePuck_proxFront, vrep.simx_opmode_buffer)
+    returnCode, position = vrep.simxGetObjectPosition(
+            clientID, ePuck, -1, vrep.simx_opmode_buffer)
     
-    returnCode, detectionState, detectedPointMid, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-            clientID, ePuck_proxMid, vrep.simx_opmode_buffer)
+    xCurrent = position[0]
+    yCurrent = position[1]
     
-    returnCode, detectionState, detectedPointRear, detectedObjectHandle, detectedSurfaceNormalVector = vrep.simxReadProximitySensor(
-            clientID, ePuck_proxRear, vrep.simx_opmode_buffer)
+    pos_current_2d = np.array([xCurrent, yCurrent])
     
-    dist[0] = detectedPointFront[2]
-    dist[1] = detectedPointMid[2]
-    dist[2] = detectedPointRear[2]
+    xDelta = xTarget - xCurrent
+    yDelta = yTarget - yCurrent
+    
+    phi_current = eulerAngles[2]
+    phi_target = math.atan2(yDelta, xDelta)
+    phi_delta = phi_current - phi_target
+    
+    print(f'phi_current: {phi_current}')
+    print(f'phi_target: {phi_target}')
     
     cmdTime = vrep.simxGetLastCmdTime(clientID)
     
-    if forceMagLink + forceMagRear < 1000:
+    print(f'{cmdTime} - {forceMagLink}')
+    if forceMagLink < 1:
         forceMagLinkAll.append(forceMagLink)
         cmdTimeAll.append(cmdTime/1000)
-        forceMagRearAll.append(forceMagRear)
-        
-    if min(dist) < 2 and min(dist) > 0:
-        cmdTimeProx.append(cmdTime/1000)
-        distAll.append(dist)
-        
 
-    print(f'{cmdTime} - {forceMagLink}')
-    if cmdTime >= sim_time*1000:
-        print(i*time_step)
-        ts2 = time.time()
-        print(ts2-ts1)
-        break
-    elif forceMagLink > 0.4 and forceMagLink < 1000:
-        print('collision!')
-        break
-    time.sleep(time_step)
+        if forceMagLink > 0.4:
+            print('collision!')
+            break
+        elif cmdTime >= sim_time*1000:
+            ts2 = time.time()
+            real_time_lapsed = ts2-ts1
+            print('timeout')
+            print(f'Simulation Time: {sim_time}')
+            print(f'Real Time: {real_time_lapsed}')
+            break
+        else:
+            set_vel(linear_velocity, 2*-phi_delta)
+            print(f'angular velocity: {-phi_delta}')
+            
+    dist_to_target = np.linalg.norm(pos_target_2d-pos_current_2d)
+    
+    if dist_to_target < 0.1:
+        linear_velocity = linear_velocity/2
+    
+    
+    
+print('made it here')
 
 # Plot force sensor graph
 fig1 = plt.figure()
 ax1 = fig1.add_subplot(1,1,1)
 ax1.plot(cmdTimeAll,forceMagLinkAll)
-ax1.plot(cmdTimeAll,forceMagRearAll)
-
-distA = np.array(distAll)
-fig2 = plt.figure()
-ax2 = fig2.add_subplot(1,1,1)
-ax2.plot(cmdTimeProx,distA[:,0])
-ax2.plot(cmdTimeProx,distA[:,1])
-ax2.plot(cmdTimeProx,distA[:,2])
-
 plt.show()
 
-returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
-        clientID, ePuck, vrep.simx_opmode_buffer)
 
-    
 returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
 
 
