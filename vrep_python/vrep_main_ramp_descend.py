@@ -12,7 +12,6 @@ import vrep
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 import time
 import math
 from subprocess import Popen, PIPE
@@ -131,8 +130,8 @@ def move_to_target(clientID,
                    linear_velocity,
                    target: '[x y] metres'):
 
-#    cmdTimeAll = []
-#    forceMagLinkAll = []
+    cmdTimeAll = []
+    forceMagLinkAll = []
     
     returnCode, position = vrep.simxGetObjectPosition(
             clientID, handle_robot, -1, vrep.simx_opmode_buffer)
@@ -167,7 +166,13 @@ def move_to_target(clientID,
         
         phi_current = eulerAngles[2]
         phi_target = math.atan2(yDelta, xDelta)
-        phi_delta = phi_current - phi_target
+        phi_delta = phi_target - phi_current
+        
+        if phi_delta < -math.pi:
+            phi_delta = phi_delta + 2*math.pi
+        elif phi_delta > math.pi:
+            phi_delta = phi_delta - 2*math.pi
+            
         
         cmdTime = vrep.simxGetLastCmdTime(clientID)
         
@@ -179,25 +184,22 @@ def move_to_target(clientID,
                 print('collision!')
                 return 1
             elif cmdTime >= sim_time*1000:
-                ts2 = time.time()
-                real_time_lapsed = ts2-ts1
                 print('timeout')
-                print(f'Simulation Time: {cmdTime}')
-                print(f'Real Time: {real_time_lapsed}')
                 return 2
             else:
                 set_vel(clientID, handle_robot, handle_leftJoint, handle_rightJoint, 
-                        linear_velocity, 2*-phi_delta)
+                        linear_velocity, 2*phi_delta)
                 
         dist_to_target = np.linalg.norm(pos_target_2d - pos_current_2d)
-        
+    
+    print('At target!')  
     return 0
         
     # Plot force sensor graph
-#    fig1 = plt.figure()
-#    ax1 = fig1.add_subplot(1,1,1)
-#    ax1.plot(cmdTimeAll,forceMagLinkAll)
-#    plt.show()
+    fig1 = plt.figure()
+    ax1 = fig1.add_subplot(1,1,1)
+    ax1.plot(cmdTimeAll,forceMagLinkAll)
+    plt.show()
     
 #%% function: turn to target
     
@@ -218,7 +220,7 @@ def turn_to_target(clientID,
         
     phi_current = eulerAngles[2]
     phi_target = math.atan2(yDelta, xDelta)
-    phi_delta = phi_current - phi_target
+    phi_delta = phi_target - phi_current
 
     while abs(phi_delta) > 0.1:
         
@@ -233,7 +235,7 @@ def turn_to_target(clientID,
         
         phi_current = eulerAngles[2]
         phi_target = math.atan2(yDelta, xDelta)
-        phi_delta = phi_current - phi_target
+        phi_delta = phi_target - phi_current
 
         set_vel(clientID, handle_robot, handle_leftJoint, handle_rightJoint, 
                 0, 2)
@@ -268,7 +270,7 @@ while answer == 0:
         sim_time = int(input('Enter the duration of the simulation (seconds): '))
         
         clientID = initialise_vrep(
-                    'epuck_arena_ramps2', 19999, headless, start_sim, 0, quit_after_sim)
+                    'epuck_arena_ramps3', 19999, headless, start_sim, 0, quit_after_sim)
         answer = 1
     elif start_vrep == 'n':
         sim_time = int(input('Enter the duration of the simulation (seconds): '))
@@ -293,11 +295,12 @@ for i in range(len(handles)):
 xStart = 1
 yStart = 0.5
 
-xTarget = 1
-yTarget = 1.1
+targets = np.array([[0.3, 0.3],
+                    [0.4, 1.1],
+                    [0.3, 0.3]])
 
 pos_init = [xStart, yStart, 0.21915] # initial position of ePuck
-ang_init = 0 # angle of ePuck from the x-axis (rad) 
+ang_init = math.pi/2 # angle of ePuck from the x-axis (rad) 
     
 set_pos_ang(clientID, ePuck, pos_init, ang_init)
 
@@ -319,25 +322,32 @@ returnCode, position = vrep.simxGetObjectPosition(
 #%% Run simulation
 
 if start_sim != True:
-    start_sim = input("To start the simulation, press Enter: ")
+    start_sim = input("Start the simulation, press Enter (or n to cancel): ")
+    if start_sim == 'n':
+        sys.exit()
     returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
     
+outcome = 0
+target_no = 0
+    
 turn_to_target(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 
-               [xTarget, yTarget])
+               targets[target_no,:])
 
-outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
-                         ePuck_rightJoint, 0.1, [xTarget, yTarget])
+while outcome == 0 and target_no < targets.shape[0]:
+    outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
+                             ePuck_rightJoint, 0.1, targets[target_no,:])
+    target_no += 1
 
-outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
-                         ePuck_rightJoint, 0.1, [1.5, 1.1])
 
 print(f'outcome: {outcome}')
     
 set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
-    
-print('made it here')
 
+cmdTime = vrep.simxGetLastCmdTime(clientID)
+ts2 = time.time()
+real_time_lapsed = ts2-ts1
+print(f'Simulation Time: {cmdTime/1000}')
+print(f'Real Time: {real_time_lapsed}')  
 
 returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
-
 
