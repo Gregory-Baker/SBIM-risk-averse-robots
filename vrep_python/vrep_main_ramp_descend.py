@@ -63,7 +63,7 @@ def initialise_vrep(scene_name: 'str',
     time.sleep(5)
     
     # Sets up communication between python and vrep
-    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,5000,5)
+    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,10000,5)
     
     if clientID!=-1:
         print('Connected to remote API server')
@@ -128,7 +128,8 @@ def move_to_target(clientID,
                    handle_leftJoint,
                    handle_rightJoint,
                    linear_velocity,
-                   target: '[x y] metres'):
+                   target: '[x y] metres',
+                   proximity_to_target = 0.05):
 
 #    cmdTimeAll = []
 #    forceMagLinkAll = []
@@ -142,7 +143,7 @@ def move_to_target(clientID,
     
     time_step = 0.02
 
-    while dist_to_target > 0.02:
+    while dist_to_target > proximity_to_target:
 
         time.sleep(time_step)
         
@@ -192,7 +193,6 @@ def move_to_target(clientID,
                 
         dist_to_target = np.linalg.norm(pos_target_2d - pos_current_2d)
     
-    print('At target!')  
     return 0
         
     # Plot force sensor graph
@@ -434,7 +434,26 @@ def neighbour_delta(n):
             if k == n:
                 return np.array([x_delta, y_delta])
             k += 1
+
+#%% Reweight function
             
+def reweight(weights,
+             indices: '[x, y, k]',
+             weight_power):
+    
+    i = indices[0]
+    j = indices[1]
+    k = indices[2]
+
+    weights[i,j,k] = weights[i,j,k]**weight_power
+
+    weight_sum = np.sum(weights[i,j])
+    
+    for k in range(0,9):
+        weights[i,j,k] = weights[i,j,k]/weight_sum
+
+    return weights
+
     
 #%% Main script
     
@@ -528,7 +547,7 @@ path_coords = []
 
 while outcome != 0 or target_no != len(path_coords):
     
-    path_coords, directions = path_plan(start, target, coords, weights)
+    path_coords, directions = path_plan(start, target, coords, weights, node_spacing)
     plot_path(coords, start, target, path_coords)
     
     returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
@@ -541,31 +560,29 @@ while outcome != 0 or target_no != len(path_coords):
 
     while outcome == 0 and target_no < len(path_coords):
         outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
-                                 ePuck_rightJoint, 0.1, path_coords[target_no,:])
+                                 ePuck_rightJoint, 0.1, path_coords[target_no,:], 0.05)
         if outcome == 0:
             target_no += 1
+    
+    returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
             
     if outcome != 0:
-        penultimate_node_index = path_coords[target_no-1]/node_spacing
-        penultimate_node_index = np.rint(penultimate_node_index)
-        penultimate_node_index = penultimate_node_index.astype(int)
-        i = penultimate_node_index[0]
-        j = penultimate_node_index[1]
-        k = directions[target_no-1]
+        penultimate_node_index = target_no - 1
+        i = int(path_coords[penultimate_node_index,0]/node_spacing) # x index of path point before crash
+        j = int(path_coords[penultimate_node_index,1]/node_spacing) # y index of path point before crash
+        k = directions[penultimate_node_index] # direction from path point before crash
         
+        # severity of reweighting based upon 
         if outcome == 1:
-            weights[i,j,k] = weights[i,j,k]**3
+            weight_power = 3
+            weights = reweight(weights, [i, j, k], weight_power)
         elif outcome == 2:
-            weights[i,j,k] = weights[i,j,k]**2
-
-        weight_sum = np.sum(weights[i,j])
-        
-        for k in range(0,9):
-            weights[i,j,k] = weights[i,j,k]/weight_sum
-
-        k = directions[target_no-1]
+            weight_power = 2
+            weights = reweight(weights, [i, j, k], weight_power)
+            
+        k = directions[penultimate_node_index]
         neigh = neighbour_paths(k)
-        
+            
         for n in neigh:
             delta = neighbour_delta(n)
             collision_node_neigh = path_coords[target_no]/node_spacing
@@ -577,19 +594,41 @@ while outcome != 0 or target_no != len(path_coords):
             j = collision_node_neigh[1]
             k = 8 - n
             
-            weights[i, j, k] = weights[i, j, k]**2
-            
-            weight_sum = np.sum(weights[i,j])
+            weights = reweight(weights, [i, j, k], 1.5)
         
-            for k in range(0,9):
-                weights[i,j,k] = weights[i,j,k]/weight_sum
-                
-    returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+        for p in range(penultimate_node_index, -1, -1):
+            weight_power = (weight_power)**0.8
+            i = int(path_coords[p,0]/node_spacing)
+            j = int(path_coords[p,1]/node_spacing)
+            k = directions[p]
+            print('here')
+            weights = reweight(weights, [i, j, k], weight_power)
+        
+    else:        
+        target_no = 1
+        plot_path(coords, start, target, path_coords)
+        
+        returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+        
+        turn_to_target(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 
+           path_coords[target_no,:])
+        
+        while outcome == 0 and target_no < len(path_coords):
+            outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
+                                     ePuck_rightJoint, 0.1, path_coords[target_no,:], 0.05)
+            
+            if outcome == 0:
+                target_no += 1
+            
+        returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+        
+    print(weights[10,5])
             
 
-#set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
+set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
 
 print(f'outcome: {outcome}')
+print(path_coords)
 
 cmdTime = vrep.simxGetLastCmdTime(clientID)
 ts2 = time.time()
@@ -597,8 +636,4 @@ real_time_lapsed = ts2-ts1
 print(f'Simulation Time: {cmdTime/1000}')
 print(f'Real Time: {real_time_lapsed}')  
 
-
-if outcome == 1:
-    crash_point = [path_coords[target_no,0], path_coords[target_no,1]]
-    plot_path(coords, start, target, path_coords, crash_point=crash_point)
 
