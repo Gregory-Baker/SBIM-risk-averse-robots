@@ -130,8 +130,8 @@ def move_to_target(clientID,
                    linear_velocity,
                    target: '[x y] metres'):
 
-    cmdTimeAll = []
-    forceMagLinkAll = []
+#    cmdTimeAll = []
+#    forceMagLinkAll = []
     
     returnCode, position = vrep.simxGetObjectPosition(
             clientID, handle_robot, -1, vrep.simx_opmode_buffer)
@@ -196,10 +196,10 @@ def move_to_target(clientID,
     return 0
         
     # Plot force sensor graph
-    fig1 = plt.figure()
-    ax1 = fig1.add_subplot(1,1,1)
-    ax1.plot(cmdTimeAll,forceMagLinkAll)
-    plt.show()
+#    fig1 = plt.figure()
+#    ax1 = fig1.add_subplot(1,1,1)
+#    ax1.plot(cmdTimeAll,forceMagLinkAll)
+#    plt.show()
     
 #%% function: turn to target
     
@@ -216,11 +216,12 @@ def turn_to_target(clientID,
             clientID, handle_robot, -1, vrep.simx_opmode_buffer)
     
     xDelta = target[0] - position[0]
-    yDelta = target[1] - position[0]
+    yDelta = target[1] - position[1]
         
     phi_current = eulerAngles[2]
     phi_target = math.atan2(yDelta, xDelta)
     phi_delta = phi_target - phi_current
+    print(phi_delta)
 
     while abs(phi_delta) > 0.1:
         
@@ -231,21 +232,212 @@ def turn_to_target(clientID,
                 clientID, handle_robot, -1, vrep.simx_opmode_buffer)
     
         xDelta = target[0] - position[0]
-        yDelta = target[1] - position[0]
+        yDelta = target[1] - position[1]
         
         phi_current = eulerAngles[2]
         phi_target = math.atan2(yDelta, xDelta)
         phi_delta = phi_target - phi_current
+        
+        if phi_delta > 0:
+            omega = 2
+        else:
+            omega = -2
 
         set_vel(clientID, handle_robot, handle_leftJoint, handle_rightJoint, 
-                0, 2)
+                0, omega)
+
+#%% Setup Weights for path plan
+
+def setup_weights(start: '[x y]',
+                  target: '[x y]',
+                  arena_dimensions = [2, 1.5],
+                  node_spacing = 0.1):
     
+    arena_length_x = arena_dimensions[0]
+    arena_length_y = arena_dimensions[1]
     
+    x_num = int(round(arena_length_x/node_spacing-1))
+    y_num = int(round(arena_length_y/node_spacing-1))
+    
+    x_coords = np.linspace(0, arena_length_x, x_num+2)
+    y_coords = np.linspace(0, arena_length_y, y_num+2)
+    
+    coords = np.zeros((x_num+2, y_num+2, 2))
+    euc_dist_to_targ = np.zeros((x_num+2, y_num+2))
+    
+    for i in range(0, x_num+2):
+        for j in range(0, y_num+2):
+            coords[i,j,0] = x_coords[i]
+            coords[i,j,1] = y_coords[j]
+            euc_dist_to_targ[i,j] = math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
+       
+    weights = np.zeros((x_num+2,y_num+2,9))
+    
+    for i in range(1,x_num+1):
+        for j in range(1,y_num+1):
+            k = 0
+            weight_sum = 0
+            for x_delta in range(-1,2):
+                for y_delta in range(-1,2):
+                    euc_x_index = i+x_delta
+                    euc_y_index = j+y_delta
+                    if ((euc_x_index in (0, x_num+1)) or (euc_y_index in (0, y_num+1)) or (x_delta == 0 and y_delta == 0)):
+                        weights[i,j,k] = 0
+                    else:
+                        weights[i,j,k] = 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
+                        weight_sum += 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
+                    k += 1
+            for k in range(0,9):
+                weights[i,j,k] = weights[i,j,k] / weight_sum
+    
+    return weights, coords
+
+#%% Path Plan
+        
+def path_plan(start: '[x y]',
+              target: '[x y]',
+              coords: 'numpy matrix',
+              weights: 'numpy matrix',
+              node_spacing=0.1):
+    
+    start_index = [int(round(start[0]/node_spacing)), int(round(start[1]/node_spacing))]
+    target_index = [int(round(target[0]/node_spacing)), int(round(target[1]/node_spacing))]           
+    
+    x_int_start_ind = start_index[0]
+    y_int_start_ind = start_index[1]
+    
+    path = [start_index]
+    directions = []
+    
+    while x_int_start_ind != target_index[0] or y_int_start_ind != target_index[1]:
+        
+        rand_num = np.random.rand()
+        
+        weights_cum = 0
+        for k in range(0,9):
+            weights_cum += weights[x_int_start_ind, y_int_start_ind, k]
+            if rand_num < weights_cum:
+                direction_index = k
+                directions.append(k)
+                break
+        
+        k=0
+        for x_delta in range(-1,2):
+            for y_delta in range(-1,2):
+                if k == direction_index:
+                    x_int_targ_ind = x_int_start_ind + x_delta
+                    y_int_targ_ind = y_int_start_ind + y_delta
+                k += 1
+    
+        path.append([x_int_targ_ind, y_int_targ_ind])
+        
+        x_int_start_ind = x_int_targ_ind
+        y_int_start_ind = y_int_targ_ind
+        
+    path_np = np.array(path)
+    path_coords = np.zeros((len(path_np),2))
+    
+    for i in range(0, len(path_np)-2):
+        for j in range(len(path_np)-1, i+1,-1):
+            if j >= len(path_np)-1:
+                continue
+            if np.logical_and(*np.equal(path_np[i],path_np[j])):
+                print(f'removing loop between path points {i} and {j}')
+                for k in range(i, j):
+                    path_np = np.delete(path_np, (i), axis = 0)
+                    del directions[i]
+    
+    for i in range(0, len(path_np)-3):
+        for j in range(len(path_np)-1, i+1,-1):
+            if j >= len(path_np)-1:
+                continue
+            x_i = path_np[i,0]
+            y_i = path_np[i,1]
+            x_j = path_np[j,0]
+            y_j = path_np[j,1]
+            k = 0
+            for x_delta in range(-1,2):
+                for y_delta in range(-1,2):
+                    x_i_neigh = x_i + x_delta
+                    y_i_neigh = y_i + y_delta
+                    if x_i_neigh == x_j and y_i_neigh == y_j:
+                        if weights[x_i, y_i, k] > 0.1:
+                            print(f'taking a shortcut from point {i} to point {j}')
+                            for h in range(i+1, j):
+                                path_np = np.delete(path_np, (i+1), axis = 0)
+                                del directions[i]
+                            del directions[i]
+                            directions.insert(i, k)
+                    k += 1
+                        
+                    
+    path_coords = np.zeros((len(path_np),2))
+    
+    for i in range(0,len(path_np)):
+        path_coords[i,0] = coords[path_np[i,0], path_np[i,1],0]
+        path_coords[i,1] = coords[path_np[i,0], path_np[i,1],1]
+    
+    return path_coords, directions
+
+#%% Plot path
+
+def plot_path(coords,
+              start,
+              target,
+              path_coords,
+              arena_dimensions = [2, 1.5],
+              crash_point = [0, 0]):
+    
+    arena_length_x = arena_dimensions[0]
+    arena_length_y = arena_dimensions[1]
+    
+    fig = plt.figure()
+    ax1 = fig.add_subplot(1,1,1)
+
+    for i in range(0, np.shape(coords)[0]):
+        for j in range(0, np.shape(coords)[1]):
+            ax1.scatter(coords[i,j,0], coords[i,j,1], c='k', marker='.', s=10)
+    
+    arena = np.array([[0,0],[0, arena_length_y],[arena_length_x, arena_length_y],[arena_length_x, 0],[0,0]])
+    
+    ax1.scatter(start[0], start[1], c='g', marker='8', s=200)
+    ax1.scatter(target[0], target[1], c='g', marker='X', s=200)
+    ax1.plot(arena[:,0], arena[:,1])
+    ax1.plot(path_coords[:,0], path_coords[:,1])
+    
+    if crash_point[0] != 0 and crash_point[1] != 0:
+        ax1.scatter(crash_point[0], crash_point[1], c='r', marker='X', s=200)
+    
+    plt.show()
+    
+#%% Neighbour paths
+    
+def neighbour_paths(k):
+    
+    if k == 0: n = [1,3]
+    elif k == 1: n = [0,2]
+    elif k == 2: n = [1,5]
+    elif k == 3: n = [0,6]
+    elif k == 4: print('k should not be 4')
+    elif k == 5: n = [2,8]
+    elif k == 6: n = [3,7]
+    elif k == 7: n = [6,8]
+    elif k == 8: n = [7,5]
+    
+    return n
+
+def neighbour_delta(n):
+    
+    k = 0
+    for x_delta in range(-1,2):
+        for y_delta in range(-1,2):
+            if k == n:
+                return np.array([x_delta, y_delta])
+            k += 1
+            
     
 #%% Main script
     
-    
-
 answer = 0
 while answer == 0:
     
@@ -288,22 +480,8 @@ returnCode, handles, intData, floatData, stringData = vrep.simxGetObjectGroupDat
 
 for i in range(len(handles)):
     exec(stringData[i] + f"={handles[i]}")
-    
-    
-#%% Set initial posiition, orientation and velocity parameters of the ePuck
-    
-xStart = 1
-yStart = 0.5
 
-targets = np.array([[0.3, 0.3],
-                    [0.4, 1.1],
-                    [0.3, 0.3]])
-
-pos_init = [xStart, yStart, 0.21915] # initial position of ePuck
-ang_init = math.pi/2 # angle of ePuck from the x-axis (rad) 
     
-set_pos_ang(clientID, ePuck, pos_init, ang_init)
-
 #%% Setup streaming calls
 
 returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
@@ -317,7 +495,24 @@ returnCode, eulerAngles = vrep.simxGetObjectOrientation(
 
 returnCode, position = vrep.simxGetObjectPosition(
         clientID, ePuck, -1, vrep.simx_opmode_streaming)
+    
+    
+#%% Set initial posiition, orientation and velocity parameters of the ePuck
 
+arena_dimensions = [2, 1.5]
+
+start = [1.0, 0.5]
+target = [0.3, 0.3]
+
+pos_init = [start[0], start[1], 0.21915] # initial position of ePuck
+ang_init = math.pi/2 # angle of ePuck from the x-axis (rad)
+    
+set_pos_ang(clientID, ePuck, pos_init, ang_init)
+
+#%% Path Plan
+
+node_spacing = 0.1
+weights, coords = setup_weights(start, target, node_spacing=node_spacing)
 
 #%% Run simulation
 
@@ -325,23 +520,76 @@ if start_sim != True:
     start_sim = input("Start the simulation, press Enter (or n to cancel): ")
     if start_sim == 'n':
         sys.exit()
-    returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
     
 outcome = 0
-target_no = 0
+target_no = 1
+path_coords = []
+
+
+while outcome != 0 or target_no != len(path_coords):
     
-turn_to_target(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 
-               targets[target_no,:])
+    path_coords, directions = path_plan(start, target, coords, weights)
+    plot_path(coords, start, target, path_coords)
+    
+    returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+    
+    outcome = 0
+    target_no = 1
+    
+    turn_to_target(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 
+           path_coords[target_no,:])
 
-while outcome == 0 and target_no < targets.shape[0]:
-    outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
-                             ePuck_rightJoint, 0.1, targets[target_no,:])
-    target_no += 1
+    while outcome == 0 and target_no < len(path_coords):
+        outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
+                                 ePuck_rightJoint, 0.1, path_coords[target_no,:])
+        if outcome == 0:
+            target_no += 1
+            
+    if outcome != 0:
+        penultimate_node_index = path_coords[target_no-1]/node_spacing
+        penultimate_node_index = np.rint(penultimate_node_index)
+        penultimate_node_index = penultimate_node_index.astype(int)
+        i = penultimate_node_index[0]
+        j = penultimate_node_index[1]
+        k = directions[target_no-1]
+        
+        if outcome == 1:
+            weights[i,j,k] = weights[i,j,k]**3
+        elif outcome == 2:
+            weights[i,j,k] = weights[i,j,k]**2
 
+        weight_sum = np.sum(weights[i,j])
+        
+        for k in range(0,9):
+            weights[i,j,k] = weights[i,j,k]/weight_sum
+
+        k = directions[target_no-1]
+        neigh = neighbour_paths(k)
+        
+        for n in neigh:
+            delta = neighbour_delta(n)
+            collision_node_neigh = path_coords[target_no]/node_spacing
+            collision_node_neigh = np.rint(collision_node_neigh)
+            collision_node_neigh = collision_node_neigh.astype(int)
+            collision_node_neigh = collision_node_neigh + delta
+            
+            i = collision_node_neigh[0]
+            j = collision_node_neigh[1]
+            k = 8 - n
+            
+            weights[i, j, k] = weights[i, j, k]**2
+            
+            weight_sum = np.sum(weights[i,j])
+        
+            for k in range(0,9):
+                weights[i,j,k] = weights[i,j,k]/weight_sum
+                
+    returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+            
+
+#set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
 
 print(f'outcome: {outcome}')
-    
-set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
 
 cmdTime = vrep.simxGetLastCmdTime(clientID)
 ts2 = time.time()
@@ -349,6 +597,8 @@ real_time_lapsed = ts2-ts1
 print(f'Simulation Time: {cmdTime/1000}')
 print(f'Real Time: {real_time_lapsed}')  
 
-returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
 
+if outcome == 1:
+    crash_point = [path_coords[target_no,0], path_coords[target_no,1]]
+    plot_path(coords, start, target, path_coords, crash_point=crash_point)
 
