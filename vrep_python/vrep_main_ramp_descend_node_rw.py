@@ -283,7 +283,17 @@ def path_plan(start: '[x y]',
               node_spacing=0.1):
     
     start_index = [int(round(start[0]/node_spacing)), int(round(start[1]/node_spacing))]
-    target_index = [int(round(target[0]/node_spacing)), int(round(target[1]/node_spacing))]           
+    target_index = [int(round(target[0]/node_spacing)), int(round(target[1]/node_spacing))]
+    
+    if target_index[0] == 0:
+        target_index[0] = 1      
+    elif target_index[1] == 0:
+        target_index[1] = 1
+    elif target_index[0] == np.size(weights[0]):
+        target_index[0] -= 1
+    elif target_index[1] == np.size(weights[1]):
+        target_index[1] -= 1
+    
     
     x_int_start_ind = start_index[0]
     y_int_start_ind = start_index[1]
@@ -302,6 +312,8 @@ def path_plan(start: '[x y]',
                     x_neigh = x_int_start_ind + x_delta
                     y_neigh = y_int_start_ind + y_delta
                     if all(node != [x_neigh, y_neigh] for node in path):
+                        euc_dist = math.sqrt((coords[x_neigh, y_neigh, 0] - target[0])**2 
+                                             + (coords[x_neigh, y_neigh, 1] - target[1])**2)
                         weights_neigh[k] = weights[x_neigh, y_neigh]
                         weights_cum += weights_neigh[k]
                 k += 1
@@ -314,6 +326,8 @@ def path_plan(start: '[x y]',
                     if x_delta != 0 or y_delta != 0:
                         x_neigh = x_int_start_ind + x_delta
                         y_neigh = y_int_start_ind + y_delta
+                        euc_dist = math.sqrt((coords[x_neigh, y_neigh, 0] - target[0])**2 
+                                             + (coords[x_neigh, y_neigh, 1] - target[1])**2)
                         weights_neigh[k] = weights[x_neigh, y_neigh]
                         weights_cum += weights_neigh[k]
                     k += 1
@@ -341,16 +355,6 @@ def path_plan(start: '[x y]',
         y_int_start_ind = y_int_targ_ind
         
     path_np = np.array(path)
-    
-#    for i in range(0, len(path_np)-2):
-#        for j in range(len(path_np)-1, i+1,-1):
-#            if j >= len(path_np)-1:
-#                continue
-#            if np.logical_and(*np.equal(path_np[i],path_np[j])):
-#                print(f'removing loop between path points {i} and {j}')
-#                for k in range(i, j):
-#                    path_np = np.delete(path_np, (i), axis = 0)
-#                    del directions[i]
     
     for i in range(0, len(path_np)-3):
         for j in range(len(path_np)-1, i+1,-1):
@@ -527,7 +531,6 @@ returnCode, position = vrep.simxGetObjectPosition(
 arena_dimensions = [2, 1.5]
 
 start = [1.0, 0.5]
-target = [0.3, 0.3]
 
 pos_init = [start[0], start[1], 0.21915] # initial position of ePuck
 ang_init = math.pi/2 # angle of ePuck from the x-axis (rad)
@@ -551,7 +554,12 @@ target_no = 1
 path_coords = []
 trials = 0
 
+x_max = np.size(weights[0])
+y_max = np.size(weights[1])
+
 while trials < 100:
+    
+    target = [np.random.rand()*arena_dimensions[0], np.random.rand()*arena_dimensions[1]]
     
     path_coords, path_indices, directions = path_plan(start, target, coords, weights, node_spacing)
     plot_path(coords, start, target, path_coords)
