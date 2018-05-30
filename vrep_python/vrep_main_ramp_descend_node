@@ -263,33 +263,31 @@ def setup_weights(start: '[x y]',
     y_coords = np.linspace(0, arena_length_y, y_num+2)
     
     coords = np.zeros((x_num+2, y_num+2, 2))
-    euc_dist_to_targ = np.zeros((x_num+2, y_num+2))
+    weights = np.zeros((x_num+2, y_num+2))
     
-    for i in range(0, x_num+2):
-        for j in range(0, y_num+2):
+    for i in range(1, x_num+1):
+        for j in range(1, y_num+1):
             coords[i,j,0] = x_coords[i]
             coords[i,j,1] = y_coords[j]
-            euc_dist_to_targ[i,j] = math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
-       
-    weights = np.zeros((x_num+2,y_num+2,9))
+            weights[i,j] = math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
     
-    for i in range(1,x_num+1):
-        for j in range(1,y_num+1):
-            k = 0
-            weight_sum = 0
-            for x_delta in range(-1,2):
-                for y_delta in range(-1,2):
-                    euc_x_index = i+x_delta
-                    euc_y_index = j+y_delta
-                    if ((euc_x_index in (0, x_num+1)) or (euc_y_index in (0, y_num+1)) or (x_delta == 0 and y_delta == 0)):
-                        weights[i,j,k] = 0
-                    else:
-                        weights[i,j,k] = 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
-                        weight_sum += 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
-                    k += 1
-            for k in range(0,9):
-                weights[i,j,k] = weights[i,j,k] / weight_sum
-    
+#    for i in range(1,x_num+1):
+#        for j in range(1,y_num+1):
+#            k = 0
+#            weight_sum = 0
+#            for x_delta in range(-1,2):
+#                for y_delta in range(-1,2):
+#                    euc_x_index = i+x_delta
+#                    euc_y_index = j+y_delta
+#                    if ((euc_x_index in (0, x_num+1)) or (euc_y_index in (0, y_num+1)) or (x_delta == 0 and y_delta == 0)):
+#                        weights[i,j,k] = 0
+#                    else:
+#                        weights[i,j,k] = 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
+#                        weight_sum += 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
+#                    k += 1
+#            for k in range(0,9):
+#                weights[i,j,k] = weights[i,j,k] / weight_sum
+#    
     return weights, coords
 
 #%% Path Plan
@@ -308,31 +306,43 @@ def path_plan(start: '[x y]',
     
     path = [start_index]
     directions = []
+    weights_neigh = np.zeros(9)
     
     while x_int_start_ind != target_index[0] or y_int_start_ind != target_index[1]:
         
-        rand_num = np.random.rand()
-        
+        k = 0
         weights_cum = 0
-        for k in range(0,9):
-            weights_cum += weights[x_int_start_ind, y_int_start_ind, k]
-            if rand_num < weights_cum:
-                direction_index = k
-                directions.append(k)
-                break
-        
-        k=0
         for x_delta in range(-1,2):
             for y_delta in range(-1,2):
-                if k == direction_index:
-                    x_int_targ_ind = x_int_start_ind + x_delta
-                    y_int_targ_ind = y_int_start_ind + y_delta
+                if x_delta != 0 or y_delta != 0:
+                    x_neigh = x_int_start_ind + x_delta
+                    y_neigh = y_int_start_ind + y_delta
+                    weights_neigh[k] = weights[x_neigh, y_neigh]
+                    weights_cum += weights_neigh[k]
                 k += 1
-                
+        
+        weights_neigh_norm = 0
+      
+        rand_num = np.random.rand()
+        
+        k = 0
+        for weight in weights_neigh:
+            weights_neigh_norm += weight/weights_cum
+            if rand_num < weights_neigh_norm:
+                directions.append(k)
+                delta = neighbour_delta(k)
+                break
+            k += 1
+        
+        x_int_targ_ind = x_int_start_ind + delta[0]
+        y_int_targ_ind = y_int_start_ind + delta[1]
+        
         path.append([x_int_targ_ind, y_int_targ_ind])
         
         x_int_start_ind = x_int_targ_ind
         y_int_start_ind = y_int_targ_ind
+        print(f'everywhere: {path}')
+    
         
     path_np = np.array(path)
     path_coords = np.zeros((len(path_np),2))
@@ -361,7 +371,7 @@ def path_plan(start: '[x y]',
                     x_i_neigh = x_i + x_delta
                     y_i_neigh = y_i + y_delta
                     if x_i_neigh == x_j and y_i_neigh == y_j:
-                        if weights[x_i, y_i, k] > 0.1:
+                        if weights[x_i, y_i] > 0.1:
                             print(f'taking a shortcut from point {i} to point {j}')
                             for h in range(i+1, j):
                                 path_np = np.delete(path_np, (i+1), axis = 0)
@@ -438,19 +448,13 @@ def neighbour_delta(n):
 #%% Reweight function
             
 def reweight(weights,
-             indices: '[x, y, k]',
+             indices: '[x, y]',
              weight_power):
     
     i = indices[0]
     j = indices[1]
-    k = indices[2]
 
-    weights[i,j,k] = weights[i,j,k]**weight_power
-
-    weight_sum = np.sum(weights[i,j])
-    
-    for k in range(0,9):
-        weights[i,j,k] = weights[i,j,k]/weight_sum
+    weights[i,j] = weights[i,j]/weight_power
 
     return weights
 
@@ -567,42 +571,16 @@ while outcome != 0 or target_no != len(path_coords):
     returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
             
     if outcome != 0:
-        penultimate_node_index = target_no - 1
-        i = int(path_coords[penultimate_node_index,0]/node_spacing) # x index of path point before crash
-        j = int(path_coords[penultimate_node_index,1]/node_spacing) # y index of path point before crash
-        k = directions[penultimate_node_index] # direction from path point before crash
+        i = int(path_coords[target_no,0]/node_spacing) # x index of path point before crash
+        j = int(path_coords[target_no,1]/node_spacing) # y index of path point before crash
         
         # severity of reweighting based upon 
         if outcome == 1:
-            weight_power = 3
-            weights = reweight(weights, [i, j, k], weight_power)
+            weight_power = 4
+            weights = reweight(weights, [i, j], weight_power)
         elif outcome == 2:
             weight_power = 2
-            weights = reweight(weights, [i, j, k], weight_power)
-            
-        k = directions[penultimate_node_index]
-        neigh = neighbour_paths(k)
-            
-        for n in neigh:
-            delta = neighbour_delta(n)
-            collision_node_neigh = path_coords[target_no]/node_spacing
-            collision_node_neigh = np.rint(collision_node_neigh)
-            collision_node_neigh = collision_node_neigh.astype(int)
-            collision_node_neigh = collision_node_neigh + delta
-            
-            i = collision_node_neigh[0]
-            j = collision_node_neigh[1]
-            k = 8 - n
-            
-            weights = reweight(weights, [i, j, k], 1.5)
-        
-        for p in range(penultimate_node_index, -1, -1):
-            weight_power = (weight_power)**0.8
-            i = int(path_coords[p,0]/node_spacing)
-            j = int(path_coords[p,1]/node_spacing)
-            k = directions[p]
-            print('here')
-            weights = reweight(weights, [i, j, k], weight_power)
+            weights = reweight(weights, [i, j], weight_power)
         
     else:        
         target_no = 1

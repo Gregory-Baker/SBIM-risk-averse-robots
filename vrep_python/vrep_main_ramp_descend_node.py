@@ -269,25 +269,9 @@ def setup_weights(start: '[x y]',
         for j in range(1, y_num+1):
             coords[i,j,0] = x_coords[i]
             coords[i,j,1] = y_coords[j]
-            weights[i,j] = 1 / math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
-    
-#    for i in range(1,x_num+1):
-#        for j in range(1,y_num+1):
-#            k = 0
-#            weight_sum = 0
-#            for x_delta in range(-1,2):
-#                for y_delta in range(-1,2):
-#                    euc_x_index = i+x_delta
-#                    euc_y_index = j+y_delta
-#                    if ((euc_x_index in (0, x_num+1)) or (euc_y_index in (0, y_num+1)) or (x_delta == 0 and y_delta == 0)):
-#                        weights[i,j,k] = 0
-#                    else:
-#                        weights[i,j,k] = 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
-#                        weight_sum += 1 / (euc_dist_to_targ[euc_x_index, euc_y_index])
-#                    k += 1
-#            for k in range(0,9):
-#                weights[i,j,k] = weights[i,j,k] / weight_sum
-#    
+            euc_dist = math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
+            weights[i,j] = min(20, (1 / euc_dist))
+        
     return weights, coords
 
 #%% Path Plan
@@ -385,7 +369,7 @@ def path_plan(start: '[x y]',
         path_coords[i,0] = coords[path_np[i,0], path_np[i,1],0]
         path_coords[i,1] = coords[path_np[i,0], path_np[i,1],1]
     
-    return path_coords, directions
+    return path_coords, path_np, directions
 
 #%% Plot path
 
@@ -447,12 +431,19 @@ def neighbour_delta(n):
             
 def reweight(weights,
              indices: '[x, y]',
-             weight_power):
+             weight_multiplier):
     
     i = indices[0]
     j = indices[1]
 
-    weights[i,j] = weights[i,j]/weight_power
+    weights[i,j] = weights[i,j]*weight_multiplier
+    
+    for x_delta in range(-1,2):
+        for y_delta in range(-1,2):
+            if x_delta != 0 or y_delta != 0:
+                x_neigh = i + x_delta
+                y_neigh = j + y_delta
+                weights[x_neigh, y_neigh] = weights[x_neigh, y_neigh]*(weight_multiplier**0.5)
 
     return weights
 
@@ -549,7 +540,7 @@ path_coords = []
 
 while outcome != 0 or target_no != len(path_coords):
     
-    path_coords, directions = path_plan(start, target, coords, weights, node_spacing)
+    path_coords, path_indices, directions = path_plan(start, target, coords, weights, node_spacing)
     plot_path(coords, start, target, path_coords)
     
     returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
@@ -572,13 +563,14 @@ while outcome != 0 or target_no != len(path_coords):
         i = int(path_coords[target_no,0]/node_spacing) # x index of path point before crash
         j = int(path_coords[target_no,1]/node_spacing) # y index of path point before crash
         
-        # severity of reweighting based upon 
-        if outcome == 1:
-            weight_power = 4
-            weights = reweight(weights, [i, j], weight_power)
+        # reweighting based upon outcome
+        if outcome == 0:
+            for i in range(1,len(path_indices)):
+                weights = reweight(weights, [i, j], 4)
+        elif outcome == 1:
+            weights = reweight(weights, [i, j], 1/4)
         elif outcome == 2:
-            weight_power = 2
-            weights = reweight(weights, [i, j], weight_power)
+            weights = reweight(weights, [i, j], 1/3)
         
     else:        
         target_no = 1
@@ -610,6 +602,8 @@ cmdTime = vrep.simxGetLastCmdTime(clientID)
 ts2 = time.time()
 real_time_lapsed = ts2-ts1
 print(f'Simulation Time: {cmdTime/1000}')
-print(f'Real Time: {real_time_lapsed}')  
+print(f'Real Time: {real_time_lapsed}')
+
+plt.imshow((weights**0.15).T,interpolation='gaussian', origin='lower')
 
 
