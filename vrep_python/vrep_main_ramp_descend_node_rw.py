@@ -142,6 +142,8 @@ def move_to_target(clientID,
     dist_to_target = np.linalg.norm(pos_target_2d - pos_start_2d)
     
     time_step = 0.02
+    
+    cmdTimeStart = vrep.simxGetLastCmdTime(clientID)
 
     while dist_to_target > proximity_to_target:
 
@@ -177,6 +179,8 @@ def move_to_target(clientID,
         
         cmdTime = vrep.simxGetLastCmdTime(clientID)
         
+        time_on_target = cmdTime - cmdTimeStart
+        
         if forceMagLink < 100:
 #            forceMagLinkAll.append(forceMagLink)
 #            cmdTimeAll.append(cmdTime/1000)
@@ -184,7 +188,7 @@ def move_to_target(clientID,
             if forceMagLink > 0.4:
                 print('collision!')
                 return 1
-            elif cmdTime >= sim_time*1000:
+            elif cmdTime >= sim_time*1000 or time_on_target >= 10000:
                 print('timeout')
                 return 2
             else:
@@ -248,9 +252,7 @@ def turn_to_target(clientID,
 
 #%% Setup Weights for path plan
 
-def setup_weights(start: '[x y]',
-                  target: '[x y]',
-                  arena_dimensions = [2, 1.5],
+def setup_weights(arena_dimensions,
                   node_spacing = 0.1):
     
     arena_length_x = arena_dimensions[0]
@@ -269,8 +271,7 @@ def setup_weights(start: '[x y]',
         for j in range(1, y_num+1):
             coords[i,j,0] = x_coords[i]
             coords[i,j,1] = y_coords[j]
-            euc_dist = math.sqrt((x_coords[i]-target[0])**2 + (y_coords[j]-target[1])**2)
-            weights[i,j] = min(20, (1 / euc_dist))
+            weights[i,j] = 1
         
     return weights, coords
 
@@ -540,7 +541,7 @@ set_pos_ang(clientID, ePuck, pos_init, ang_init)
 #%% Path Plan
 
 node_spacing = 0.1
-weights, coords = setup_weights(start, target, node_spacing=node_spacing)
+weights, coords = setup_weights(arena_dimensions, node_spacing)
 
 #%% Run simulation
 
@@ -557,7 +558,7 @@ trials = 0
 x_max = np.size(weights[0])
 y_max = np.size(weights[1])
 
-while trials < 100:
+while trials < 50:
     
     target = [np.random.rand()*arena_dimensions[0], np.random.rand()*arena_dimensions[1]]
     
