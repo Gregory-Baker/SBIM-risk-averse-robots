@@ -110,7 +110,7 @@ def set_vel(clientID: 'int',
     vel_r = linear_velocity + wheel_sep*angular_velocity/2
     vel_l = linear_velocity - wheel_sep*angular_velocity/2
     
-    # Convert to wheel angular veolocities
+    # Convert to wheel angular velocities
     omega_r = vel_r/wheel_rad
     omega_l = vel_l/wheel_rad
     
@@ -131,9 +131,6 @@ def move_to_target(clientID,
                    target: '[x y] metres',
                    proximity_to_target = 0.05):
 
-#    cmdTimeAll = []
-#    forceMagLinkAll = []
-    
     returnCode, position = vrep.simxGetObjectPosition(
             clientID, handle_robot, -1, vrep.simx_opmode_buffer)
     
