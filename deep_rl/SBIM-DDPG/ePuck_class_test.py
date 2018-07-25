@@ -11,10 +11,12 @@ Created on Thu Jul 19 15:52:32 2018
 import vrep
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 import time
 import math
 from subprocess import Popen, PIPE
+from matplotlib import path
+import threading
+from queue import Queue
 
 #%% ePuck class
 
@@ -67,6 +69,9 @@ class ePuck:
         
     def set_pos(self, 
                 position: '[x y] metres'):
+        
+        position = np.array(position)
+        position = position.tolist()
         
         if len(position)==2:
             position.append(0.01915)
@@ -144,34 +149,44 @@ class ePuck:
         dist_to_target = np.linalg.norm(target_np - position_np) 
 
         while dist_to_target > proximity_to_target:
-                
+            
+            _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+            if(sim_run == 0):
+                break
+            
             self.get_pos()
             self.get_ang()
             self.read_prox_sens()
             
             # Check if front and side prox sens are activated
-            if(sum(self.proxDist[0:6])>0):
-                velRight = linear_velocity
-                velLeft = linear_velocity
-                if(sum(self.proxDist[1:5])>0):
-                    for i in range(1,5):
-                        velLeft = velLeft + linear_velocity*brait_weights_leftMotor[i]*(1-(self.proxDist[i]/noDetectionDistance))
-                                
-                      
-            position_np = np.array(self.position) 
-            
-            xDelta = target[0] - self.position[0]
-            yDelta = target[1] - self.position[1]
-            
-            phi_target = math.atan2(yDelta, xDelta)
-            phi_delta = phi_target - self.angle
-            
-            if phi_delta < -math.pi:
-                phi_delta = phi_delta + 2*math.pi
-            elif phi_delta > math.pi:
-                phi_delta = phi_delta - 2*math.pi
+            if(sum(self.proxDist[1:5])>0):
+                velRight = 2
+                velLeft = 2
+                for i in range(1,5):
+                    velLeft = velLeft + 2*self.brait_weights_leftMotor[i]*(1-(self.proxDist[i]/self.noDetectionDistance))
+                    velRight = velRight + 2*self.brait_weights_leftMotor[5-i]*(1-(self.proxDist[i]/self.noDetectionDistance))
 
-            self.set_vel(linear_velocity, 2*phi_delta)
+                vrep.simxSetJointTargetVelocity(clientID, self.leftJoint, velRight, vrep.simx_opmode_streaming)
+                vrep.simxSetJointTargetVelocity(clientID, self.rightJoint, velLeft, vrep.simx_opmode_streaming)
+            
+            else:
+    
+                position_np = np.array(self.position) 
+                
+                xDelta = target[0] - self.position[0]
+                yDelta = target[1] - self.position[1]
+                
+                phi_target = math.atan2(yDelta, xDelta)
+                phi_delta = phi_target - self.angle
+                
+                if phi_delta < -math.pi:
+                    phi_delta = phi_delta + 2*math.pi
+                elif phi_delta > math.pi:
+                    phi_delta = phi_delta - 2*math.pi
+                    
+                angular_velocity = 2*phi_delta
+
+                self.set_vel(linear_velocity, angular_velocity)
                     
             dist_to_target = np.linalg.norm(target_np - position_np)
         
@@ -214,6 +229,39 @@ def initialise_vrep(scene_name: 'str',
         
     return clientID
 
+#%%
+    
+def calculate_positions(map_buffer: 'np.array of points',
+                number_of_points: 'number of points to be calculated',
+                min_spacing: 'minimum euc distance between points'):
+
+    arena_dims = np.array([max(map_buffer[:,0]), max(map_buffer[:,1])])
+    
+    map_path = path.Path(map_buffer)
+    
+    positions = np.empty([number_of_points,2])
+    
+    for i in range(number_of_points):
+        position_added = False
+        
+        while not position_added:
+            position_candidate = np.random.rand(1,2)
+            position_candidate = np.multiply(position_candidate, arena_dims)
+         
+            if map_path.contains_point(position_candidate[0]):
+                if i > 0:
+                    for j in range(0,i):
+                        if(np.linalg.norm(position_candidate - positions[j,:]) < min_spacing):
+                            break
+                        if(j == i-1):
+                            positions[i,:] = position_candidate
+                            position_added = True
+                else:
+                    positions[i,:] = position_candidate
+                    position_added = True
+        
+    return positions
+
 #%%--------------------------------------------------------------- 
 # Main script
     
@@ -241,14 +289,54 @@ while answer == 0:
 
 #%% Setup ePuck objects
 
+number_epucks = 5
+
 returnCode = []
 epuck = []
-string = 'ePuck#'
-for i in range(5):
+
+for i in range(number_epucks):
     robot = ePuck(i)
     epuck.append(robot)
     
+    
+#%% Size of arena (map)
+    
+map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
+
+buffer = 0.1
+map_buffer = np.array([[0 + buffer, 0 + buffer],
+                       [0 + buffer, 1.5 - buffer],
+                       [2 - buffer, 1.5 - buffer],
+                       [2 - buffer, 0 + buffer]])
+        
+
+#%% Randomise ePuck starting positions
+
+
+# Minimum initial spacing between robots (m)
+epuck_min_spacing = 0.2     
+
+# Randomised starting position with minimum spacing and buffer dist from arena walls
+start_positions = calculate_positions(map_buffer, number_epucks, epuck_min_spacing)
+                
+target_positions = calculate_positions(map_buffer, number_epucks, epuck_min_spacing)
+
+# Set epuck starting parameters
 for robot in epuck:
     robot.set_vel(0,0)
+    robot.set_pos(start_positions[int(robot.i),:])
+    robot.set_ang(np.random.rand()*2*math.pi)
     
+#%%
+
+start_sim = input("Start the simulation, press Enter (or n to cancel): ")
+if start_sim == 'n':
+    sys.exit()
+
+returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+
+time.sleep(3)
+
+epuck[2].move_to_target(target_positions[2,:], 0.05)
+epuck[2].set_vel(0,0)
 
