@@ -16,7 +16,7 @@ import math
 from subprocess import Popen, PIPE
 from matplotlib import path
 import threading
-from queue import Queue
+#from queue import Queue
 
 #%% ePuck class
 
@@ -128,6 +128,8 @@ class ePuck:
         
         returnCode, linearVelocity, angularVelocity =                   vrep.simxGetObjectVelocity(clientID, self.handle, vrep.simx_opmode_buffer)
         
+#----------------------------------------------------------------------------
+# Read Sensors      
         
     def read_prox_sens(self):
         
@@ -135,6 +137,14 @@ class ePuck:
             returnCode, self.proxSensor[i], self.proxPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.proxSensorHandle[i], vrep.simx_opmode_buffer)
         
             self.proxDist[i] = self.proxSensor[i]*np.linalg.norm(np.array(self.proxPoint[i]))
+            
+    
+    def read_force_sens(self):
+        
+        _, state, forceVector, _ = vrep.simxReadForceSensor(clientID, self.link, vrep.simx_opmode_buffer)
+        
+        self.forceMag = np.linalg.norm(forceVector)
+    
         
 #----------------------------------------------------------------------------
 # Other functions
@@ -222,8 +232,10 @@ class ePuck:
         
     def random_walk(self,
                     linear_velocity: 'm/s',
+#                    stop_event,
                     angular_velocity_std_dev = 1):
         
+#        while not stop_event.is_set():
         _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
         
         while sim_run != 0:
@@ -332,7 +344,7 @@ while answer == 0:
             headless = True
                 
         clientID = initialise_vrep(
-                    'epuck_arena_multi', 19999, headless)
+                    'epuck_arena_multi_spawn', 19999, headless)
         answer = 1
     elif start_vrep == 'n':
         clientID = 0
@@ -342,15 +354,19 @@ while answer == 0:
 
 #%% Setup ePuck objects
 
-number_epucks = 5
-
 returnCode = []
-epuck = []
 
-for i in range(number_epucks):
+ego_puck = ePuck(0)
+
+number_epucks = 4
+epuck = []
+epuck.append(ePuck(1))
+
+for i in range(2, number_epucks+1):
+    returnCode, newObjectHandles = vrep.simxCopyPasteObjects( clientID, [epuck[0].handle], vrep.simx_opmode_blocking)
     robot = ePuck(i)
     epuck.append(robot)
-    
+
     
 #%% Size of arena (map)
     
@@ -370,9 +386,14 @@ map_buffer = np.array([[0 + buffer, 0 + buffer],
 epuck_min_spacing = 0.2     
 
 # Randomised starting position with minimum spacing and buffer dist from arena walls
-start_positions = calculate_positions(map_buffer, number_epucks, epuck_min_spacing)
+start_positions = calculate_positions(map_buffer, number_epucks+1, epuck_min_spacing)
                 
-target_positions = calculate_positions(map_buffer, number_epucks, epuck_min_spacing)
+target_positions = calculate_positions(map_buffer, number_epucks+1, epuck_min_spacing)
+
+# Set ego_puck starting parameters
+ego_puck.set_vel(0,0)
+ego_puck.set_pos(start_positions[int(ego_puck.i),:])
+ego_puck.set_ang(np.random.rand()*2*math.pi)
 
 # Set epuck starting parameters
 for robot in epuck:
@@ -392,20 +413,28 @@ time.sleep(1)
 
 t = [None]*number_epucks
 
-for i in range(1,number_epucks):
-    robot_velocity = np.absolute(np.random.normal(0.1,0.05))
-    print(f'Velocity of ePuck#{i}: {robot_velocity}')
-    
-    t[i] = threading.Thread(target = epuck[i].random_walk, args = (robot_velocity,1))
+stop_event = threading.Event()
 
-for i in range(1,number_epucks):
+for i in range(number_epucks):
+    robot_velocity = np.absolute(np.random.normal(0.1,0.05))
+    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
+    
+    t[i] = threading.Thread(target = epuck[i].random_walk, args = (robot_velocity,))
+#    t[i].daemon = True
+
+for i in range(number_epucks):
     t[i].start()
 
-for i in range(1,number_epucks):
+for i in range(number_epucks):
     t[i].join()
 
 #epuck[2].move_to_target(target_positions[2,:], 0.05)
-for i in range(1,number_epucks):
+for i in range(number_epucks):
     epuck[i].set_vel(0,0)
 
-returnCode, newObjectHandles = vrep.simxCopyPasteObjects( clientID, int(epuck[0].i), vrep.simx_opmode_blocking)
+
+#%% Delete extra epucks
+    
+for robot in epuck:
+    if robot.i != '1':
+        returnCode = vrep.simxRemoveModel(clientID, robot.handle, vrep.simx_opmode_oneshot)
