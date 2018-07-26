@@ -113,6 +113,7 @@ class ePuck:
         
         self.position = [position[0], position[1]]
         return self.position
+    
         
     def get_ang(self):
         
@@ -121,13 +122,12 @@ class ePuck:
         
         self.angle = eulerAngles[2]
         return self.angle
+    
         
     def get_vel(self):
         
         returnCode, linearVelocity, angularVelocity =                   vrep.simxGetObjectVelocity(clientID, self.handle, vrep.simx_opmode_buffer)
         
-#----------------------------------------------------------------------------
-# Other functions
         
     def read_prox_sens(self):
         
@@ -136,9 +136,13 @@ class ePuck:
         
             self.proxDist[i] = self.proxSensor[i]*np.linalg.norm(np.array(self.proxPoint[i]))
         
+#----------------------------------------------------------------------------
+# Other functions
+        
     def move_to_target(self, 
                        target: '[x y] metres', 
-                       linear_velocity: 'm/s', 
+                       linear_velocity: 'm/s',
+                       stop_at_target: 'bool',
                        proximity_to_target = 0.05):
 
         self.get_pos()
@@ -160,14 +164,8 @@ class ePuck:
             
             # Check if front and side prox sens are activated
             if(sum(self.proxDist[1:5])>0):
-                velRight = 2
-                velLeft = 2
-                for i in range(1,5):
-                    velLeft = velLeft + 2*self.brait_weights_leftMotor[i]*(1-(self.proxDist[i]/self.noDetectionDistance))
-                    velRight = velRight + 2*self.brait_weights_leftMotor[5-i]*(1-(self.proxDist[i]/self.noDetectionDistance))
-
-                vrep.simxSetJointTargetVelocity(clientID, self.leftJoint, velRight, vrep.simx_opmode_streaming)
-                vrep.simxSetJointTargetVelocity(clientID, self.rightJoint, velLeft, vrep.simx_opmode_streaming)
+                
+                self.avoid_obstacles(2)
             
             else:
     
@@ -189,6 +187,61 @@ class ePuck:
                 self.set_vel(linear_velocity, angular_velocity)
                     
             dist_to_target = np.linalg.norm(target_np - position_np)
+        
+        if stop_at_target:
+            self.set_vel(0,0)
+            
+    def avoid_obstacles(self,
+                        wheel_velocity):
+
+        velRight = wheel_velocity
+        velLeft = wheel_velocity
+        for i in range(1,5):
+            
+            velLeft = velLeft + wheel_velocity*self.brait_weights_leftMotor[5-i]*(1-(self.proxDist[i]/self.noDetectionDistance))
+            
+            velRight = velRight + wheel_velocity*self.brait_weights_leftMotor[i]*(1-(self.proxDist[i]/self.noDetectionDistance))
+        
+        proxDist_np = np.array(self.proxDist[1:5])
+        proxDist_nonzero_ind = np.nonzero(proxDist_np)[0]
+        proxDist_nonzero = proxDist_np[proxDist_nonzero_ind]
+        proxDist_min = np.min(proxDist_nonzero)
+        proxDist_argmin = np.argmin(proxDist_nonzero)
+        
+        if proxDist_min < 0.02:
+            
+            if proxDist_argmin <= 1:
+                self.set_vel(0, -2)
+            else:
+                self.set_vel(0, 2)
+            
+        else:
+                
+            vrep.simxSetJointTargetVelocity(clientID, self.leftJoint, velLeft, vrep.simx_opmode_streaming)
+            vrep.simxSetJointTargetVelocity(clientID, self.rightJoint, velRight, vrep.simx_opmode_streaming)
+        
+    def random_walk(self,
+                    linear_velocity: 'm/s',
+                    angular_velocity_std_dev = 1):
+        
+        _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+        
+        while sim_run != 0:
+            
+            self.read_prox_sens()
+            angular_velocity = 0.0
+            
+            if(sum(self.proxDist[1:5])>0):
+                
+                self.avoid_obstacles(2)
+            else:
+                angular_velocity = np.random.normal(angular_velocity, angular_velocity_std_dev)
+                self.set_vel(linear_velocity, angular_velocity)
+                
+            _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+            
+        
+        
         
     
 #%% Function to start VREP
@@ -335,8 +388,24 @@ if start_sim == 'n':
 
 returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
 
-time.sleep(3)
+time.sleep(1)
 
-epuck[2].move_to_target(target_positions[2,:], 0.05)
-epuck[2].set_vel(0,0)
+t = [None]*number_epucks
 
+for i in range(1,number_epucks):
+    robot_velocity = np.absolute(np.random.normal(0.1,0.05))
+    print(f'Velocity of ePuck#{i}: {robot_velocity}')
+    
+    t[i] = threading.Thread(target = epuck[i].random_walk, args = (robot_velocity,1))
+
+for i in range(1,number_epucks):
+    t[i].start()
+
+for i in range(1,number_epucks):
+    t[i].join()
+
+#epuck[2].move_to_target(target_positions[2,:], 0.05)
+for i in range(1,number_epucks):
+    epuck[i].set_vel(0,0)
+
+returnCode, newObjectHandles = vrep.simxCopyPasteObjects( clientID, int(epuck[0].i), vrep.simx_opmode_blocking)
