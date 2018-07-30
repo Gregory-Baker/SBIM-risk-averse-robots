@@ -142,6 +142,8 @@ def move_to_target(clientID,
     dist_to_target = np.linalg.norm(pos_target_2d - pos_start_2d)
     
     time_step = 0.02
+    
+    cmdTimeStart = vrep.simxGetLastCmdTime(clientID)
 
     while dist_to_target > proximity_to_target:
 
@@ -177,6 +179,8 @@ def move_to_target(clientID,
         
         cmdTime = vrep.simxGetLastCmdTime(clientID)
         
+        time_on_target = cmdTime - cmdTimeStart
+        
         if forceMagLink < 100:
 #            forceMagLinkAll.append(forceMagLink)
 #            cmdTimeAll.append(cmdTime/1000)
@@ -184,7 +188,7 @@ def move_to_target(clientID,
             if forceMagLink > 0.4:
                 print('collision!')
                 return 1
-            elif cmdTime >= sim_time*1000:
+            elif cmdTime >= sim_time*1000 or time_on_target >= 10000:
                 print('timeout')
                 return 2
             else:
