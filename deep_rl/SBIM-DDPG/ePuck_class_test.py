@@ -250,19 +250,24 @@ class ePuck:
         
     def random_walk(self,
                     linear_velocity: 'm/s',
-                    angular_velocity_std_dev = 1):
+                    angular_velocity_std_dev = 0.1,
+                    epsilon_straight = 0.02):
         
         _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+        angular_velocity = 0.0
         
         while sim_run != 0:
             
             self.read_prox_sens()
-            angular_velocity = 0.0
             
             if(sum(self.proxDist[1:5])>0):
                 
                 self.avoid_obstacles(2)
             else:
+                
+                if np.random.rand() < epsilon_straight:
+                    angular_velocity = 0.0
+                
                 angular_velocity = np.random.normal(angular_velocity, angular_velocity_std_dev)
                 self.set_vel(linear_velocity, angular_velocity)
                 
@@ -435,6 +440,36 @@ def buffer_map(map_points: 'n x 2 numpy array',
     map_buffer = map_buffer.reshape(-1,2)
     
     return map_buffer
+
+def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
+                 turn_angle):
+    
+    _, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [sensor_handle], vrep.simx_opmode_blocking)
+    
+    new_sensor_handle = newObjectHandles[0]
+    
+    _, parent_handle = vrep.simxGetObjectParent(clientID, sensor_handle, vrep.simx_opmode_blocking)
+    
+    vrep.simxSetObjectParent(clientID, new_sensor_handle, parent_handle, True, vrep.simx_opmode_oneshot)
+    
+    vrep.simxSetObjectOrientation(clientID, new_sensor_handle, sensor_handle, [0,(turn_angle*math.pi)/180,1], vrep.simx_opmode_oneshot)
+    
+    return new_sensor_handle
+
+
+def create_sensor_array(sensor_handle: 'handle of sensor to be cloned',
+                        number_sensors: 'number to be added',
+                        angle_between_sensors: 'deg'):
+
+    laser_sensor_handles = []
+    
+    for i in range(number_sensors):
+        turn_angle = (i+1)*angle_between_sensors
+        new_sensor_handle = clone_sensor(sensor_handle, turn_angle)
+        laser_sensor_handles.append(new_sensor_handle)
+        
+    return laser_sensor_handles
+
         
 
 #%%--------------------------------------------------------------- 
@@ -468,7 +503,7 @@ returnCode = []
 
 ego_puck = ePuck(0)
 
-number_epucks = 5
+number_epucks = 3
 epuck = []
 epuck.append(ePuck(1))
 
@@ -543,6 +578,7 @@ for obs in obstacle:
 start_sim = input("Start the simulation, press Enter (or n to cancel): ")
 if start_sim == 'n':
     delete_epucks()
+    delete_objects(obstacle)
     sys.exit()
 
 returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
