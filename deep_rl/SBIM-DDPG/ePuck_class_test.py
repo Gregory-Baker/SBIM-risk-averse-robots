@@ -35,9 +35,15 @@ class ePuck:
     brait_weights_leftMotor = [-1,1,2,-2,-1,0,0,0]
     noDetectionDistance = 0.04
     
+    # Special Parameters for ego_puck
+    number_laser_sensors = 181
+    
 #----------------------------------------------------------------------------
         
-    def __init__(self, index):
+    def __init__(self, 
+                 index,
+                 ego_puck = False):
+
         self.i = str(index)
         self.name = 'ePuck#' + self.i
         
@@ -66,9 +72,20 @@ class ePuck:
         self.proxSensor = [None]*8
         self.proxPoint = [None]*8
         self.proxDist = [None]*8
-        for i in range(0,8):
-           returnCode, self.proxSensor[i], self.proxPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.proxSensorHandle[i], vrep.simx_opmode_streaming) 
+        for i in range(8):
+            returnCode, self.proxSensor[i], self.proxPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.proxSensorHandle[i], vrep.simx_opmode_streaming)
         
+        if ego_puck:
+            self.laserSensor = [None]*self.number_laser_sensors
+            self.laserPoint = [None]*self.number_laser_sensors
+            self.laserDist = [None]*self.number_laser_sensors
+            
+            _, self.laserSensorHandle, _, _, _ = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'laserSensorHandles', [self.number_laser_sensors], [], [], emptyBuff, vrep.simx_opmode_blocking)
+
+            for i in range(self.number_laser_sensors):
+                _, self.laserSensor[i], self.laserPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.laserSensorHandle[i], vrep.simx_opmode_streaming)
+            
+            
 #----------------------------------------------------------------------------
 # Setters
         
@@ -138,7 +155,7 @@ class ePuck:
         
     def read_prox_sens(self):
         
-        for i in range(0,8):
+        for i in range(8):
             returnCode, self.proxSensor[i], self.proxPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.proxSensorHandle[i], vrep.simx_opmode_buffer)
         
             self.proxDist[i] = self.proxSensor[i]*np.linalg.norm(np.array(self.proxPoint[i]))
@@ -149,7 +166,14 @@ class ePuck:
         _, state, forceVector, _ = vrep.simxReadForceSensor(clientID, self.link, vrep.simx_opmode_buffer)
         
         self.forceMag = np.linalg.norm(forceVector)
-    
+        
+    def read_laser_sens(self):
+        
+        for i in range(self.number_laser_sensors):
+            
+            returnCode, self.laserSensor[i], self.laserPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.laserSensorHandle[i], vrep.simx_opmode_buffer)
+            
+            self.laserDist[i] = self.laserSensor[i]*self.laserPoint[i][2]
         
 #----------------------------------------------------------------------------
 # Other functions
@@ -176,23 +200,17 @@ class ePuck:
             if(sim_run == 0):
                 break
             
+            self.read_laser_sens()
+            
             if force_sens:
                 self.read_force_sens()
-                print(f'egoPuck Force: {self.forceMag}')
                 if self.forceMag < 100:
                     self.forceMagList.append(self.forceMag)
             
             self.get_pos()
             self.get_ang()
             self.read_prox_sens()
-            
-            # Check if front and side prox sens are activated
-#            if(sum(self.proxDist[1:5])>0):
-#                
-#                self.avoid_obstacles(2)
-#            
-#            else:
-    
+                
             position_np = np.array(self.position) 
             
             xDelta = target_np[0] - self.position[0]
@@ -243,7 +261,6 @@ class ePuck:
                 self.set_vel(0, 2)
             
         else:
-                
             vrep.simxSetJointTargetVelocity(clientID, self.leftJoint, velLeft, vrep.simx_opmode_streaming)
             vrep.simxSetJointTargetVelocity(clientID, self.rightJoint, velRight, vrep.simx_opmode_streaming)
         
@@ -277,7 +294,7 @@ class ePuck:
             
 #%%
         
-class obstacle_cuboid:
+class obstacle:
     
     def __init__(self, handle, dimensions):
         self.handle = handle
@@ -307,6 +324,22 @@ class obstacle_cuboid:
         
         # Set orientation
         vrep.simxSetObjectOrientation(clientID, self.handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
+        
+        
+def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
+                    mean = 0.2,
+                    std_dev = 0.03):
+    
+    obstacle_dimensions = [None]*3
+    obstacle_dimensions[0] = np.absolute(np.random.normal(mean,std_dev))
+    obstacle_dimensions[1] = np.absolute(np.random.normal(mean,std_dev))
+    obstacle_dimensions[2] = np.absolute(np.random.normal(mean,std_dev))
+    
+    res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createCuboid', [obstacle_type_int], obstacle_dimensions, [], emptyBuff, vrep.simx_opmode_blocking)
+    
+    obstacle_handle = retInts[0]
+    
+    return obstacle_handle, obstacle_dimensions
 
     
 #%% Function to start VREP
@@ -457,9 +490,11 @@ def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
     return new_sensor_handle
 
 
-def create_sensor_array(sensor_handle: 'handle of sensor to be cloned',
+def create_sensor_array(sensor_name: 'name of sensor to be cloned',
                         number_sensors: 'number to be added',
                         angle_between_sensors: 'deg'):
+    
+    _, sensor_handle = vrep.simxGetObjectHandle(clientID, sensor_name, vrep.simx_opmode_blocking)
 
     laser_sensor_handles = []
     
@@ -501,7 +536,7 @@ while answer == 0:
 
 returnCode = []
 
-ego_puck = ePuck(0)
+ego_puck = ePuck(0, True)
 
 number_epucks = 3
 epuck = []
@@ -515,22 +550,15 @@ for i in range(2, number_epucks+1):
     
 #%% Size of arena (map)
     
-map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
-
-map_buffer = buffer_map(map_points, 0.1)       
+map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])   
         
 #%% Create obstacles
 obstacle = []
 number_obstacles = 2
 
 for i in range(number_obstacles):
-    box_size = [None]*3
-    box_size[0] = np.absolute(np.random.normal(0.2,0.03))
-    box_size[1] = np.absolute(np.random.normal(0.2,0.03))
-    box_size[2] = np.absolute(np.random.normal(0.2,0.03))
-    res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createCuboid', [], box_size, [], emptyBuff, vrep.simx_opmode_blocking)
-
-    obstacle.append(obstacle_cuboid(retInts[0], box_size))
+    obstacle_handle, obstacle_dimensions = create_cuboid_obstacle()
+    obstacle.append(obstacle_cuboid(obstacle_handle, obstacle_dimensions))
 
 #%% Randomise ePuck starting positions
 
@@ -541,19 +569,22 @@ epuck_min_spacing = 0.2
 # Randomised starting position with minimum spacing and buffer dist from arena walls
 start_positions = calculate_positions(map_points, number_epucks+1, epuck_min_spacing)
 
+# array of robot and obstacle radii, used to avoid placing obstacles on top of robots
 radii = [0.05]*number_epucks
-radii.append(obstacle[0].radius)
-radii.append(obstacle[1].radius)
 
-obstacle[0].position = extra_position(map_points, start_positions, radii, obstacle[0].radius)
-obstacle[1].position = extra_position(map_points, start_positions, radii, obstacle[1].radius)
-
+# keep track of obstacle positions and radii separately
 obstacle_positions = []
 obstacle_radii = []
+
+# Caluclate positions for obstacles that dont impact robot positions
 for obs in obstacle:
+    radii.append(obs.radius)
+    obs.position = extra_position(map_points, start_positions, radii, obs.radius)
     obstacle_positions.append(obs.position)
     obstacle_radii.append(obs.radius)
-    
+    obs.set_pos(obs.position)
+
+# target position avoiding obstacles in map   
 target_positions = extra_position(map_points, np.array(obstacle_positions), obstacle_radii, 0.05)
 
 
@@ -568,9 +599,6 @@ for robot in epuck:
     robot.set_vel(0,0)
     robot.set_pos(start_positions[int(robot.i),:])
     robot.set_ang(np.random.rand()*2*math.pi)
-
-for obs in obstacle:
-    obs.set_pos(obs.position)
 
     
 #%%
