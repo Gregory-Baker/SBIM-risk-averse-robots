@@ -177,6 +177,39 @@ class ePuck:
         
 #----------------------------------------------------------------------------
 # Other functions
+            
+    def distance_to_target(self,
+                           target):
+        
+        position_np = np.array(self.position) 
+        target_np = np.array(target)
+            
+        distance_to_target = np.linalg.norm(target_np - position_np)
+        
+        return distance_to_target
+    
+    def angle_to_target(self,
+                        target):
+        
+        position_np = np.array(self.position) 
+        target_np = np.array(target)
+        
+        xDelta = target_np[0] - position_np[0]
+        yDelta = target_np[1] - position_np[1]
+        
+        # angle between robot position and target position in world coordinate frame
+        angle_to_target_world = math.atan2(yDelta, xDelta)
+        
+        # angle to target in robot coordinate frame
+        angle_to_target = angle_to_target_world - self.angle
+        
+        if angle_to_target < -math.pi:
+            angle_to_target = angle_to_target + 2*math.pi
+        elif angle_to_target > math.pi:
+            angle_to_target = angle_to_target - 2*math.pi
+            
+        return angle_to_target
+        
         
     def move_to_target(self, 
                        target: '[x y] metres', 
@@ -209,26 +242,14 @@ class ePuck:
             
             self.get_pos()
             self.get_ang()
-            self.read_prox_sens()
-                
-            position_np = np.array(self.position) 
             
-            xDelta = target_np[0] - self.position[0]
-            yDelta = target_np[1] - self.position[1]
+            dist_to_target = self.distance_to_target(target_np)
+            ang_to_target = self.angle_to_target(target_np)
             
-            phi_target = math.atan2(yDelta, xDelta)
-            phi_delta = phi_target - self.angle
-            
-            if phi_delta < -math.pi:
-                phi_delta = phi_delta + 2*math.pi
-            elif phi_delta > math.pi:
-                phi_delta = phi_delta - 2*math.pi
-                
-            angular_velocity = 2*phi_delta
+            angular_velocity = 2*ang_to_target
 
             self.set_vel(linear_velocity, angular_velocity)
                     
-            dist_to_target = np.linalg.norm(target_np - position_np)
             print(f'Distance to Target: {dist_to_target}')
             
             time.sleep(0.05)
@@ -299,10 +320,6 @@ class obstacle:
     def __init__(self, handle, dimensions):
         self.handle = handle
         self.dimensions = dimensions
-        self.width = dimensions[0]
-        self.depth = dimensions[1]
-        self.height = dimensions[2]
-        self.radius = np.hypot(dimensions[0],dimensions[1])
         
         
     def set_pos(self, 
@@ -325,17 +342,41 @@ class obstacle:
         # Set orientation
         vrep.simxSetObjectOrientation(clientID, self.handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
         
+class cuboid (obstacle):
+    
+    def __init__ (self, handle, dimensions):
+        super().__init__(handle, dimensions)
+        self.width = dimensions[0]
+        self.depth = dimensions[1]
+        self.height = dimensions[2]
+        self.radius = np.hypot(dimensions[0],dimensions[1])
+        self.type = 0
+        
+
+class cylinder (obstacle):
+    
+    def __init__ (self, handle, dimensions):
+        super().__init__(handle, dimensions)
+        self.radius = dimensions[0]
+        self.height = dimensions[2]
+        self.type = 1
+        
         
 def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
                     mean = 0.2,
                     std_dev = 0.03):
     
+    # changes int to 0 for cuboid, 2 for cylinder
+    obstacle_type_int *= 2
+    
+    # obstacle dimensions
     obstacle_dimensions = [None]*3
     obstacle_dimensions[0] = np.absolute(np.random.normal(mean,std_dev))
     obstacle_dimensions[1] = np.absolute(np.random.normal(mean,std_dev))
     obstacle_dimensions[2] = np.absolute(np.random.normal(mean,std_dev))
     
-    res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createCuboid', [obstacle_type_int], obstacle_dimensions, [], emptyBuff, vrep.simx_opmode_blocking)
+    # Call vrep function that creates pure shapes
+    res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createObstacle', [obstacle_type_int], obstacle_dimensions, [], emptyBuff, vrep.simx_opmode_blocking)
     
     obstacle_handle = retInts[0]
     
@@ -550,15 +591,25 @@ for i in range(2, number_epucks+1):
     
 #%% Size of arena (map)
     
-map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])   
+map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
+
+# Confine start point to first quartile
+map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
+
+# Confine target point to end quarter of arena
+map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
         
 #%% Create obstacles
 obstacle = []
-number_obstacles = 2
+number_obstacles = 3
 
 for i in range(number_obstacles):
-    obstacle_handle, obstacle_dimensions = create_cuboid_obstacle()
-    obstacle.append(obstacle_cuboid(obstacle_handle, obstacle_dimensions))
+    obs_type = np.random.randint(2)
+    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
+    if obs_type == 0:
+        obstacle.append(cuboid(obstacle_handle, obstacle_dimensions))
+    else:
+        obstacle.append(cylinder(obstacle_handle, obstacle_dimensions))
 
 #%% Randomise ePuck starting positions
 
@@ -570,7 +621,14 @@ epuck_min_spacing = 0.2
 start_positions = calculate_positions(map_points, number_epucks+1, epuck_min_spacing)
 
 # array of robot and obstacle radii, used to avoid placing obstacles on top of robots
-radii = [0.05]*number_epucks
+radii = [0.05]
+
+# Set epuck starting parameters
+for robot in epuck:
+    robot.set_vel(0,0)
+    robot.set_pos(start_positions[int(robot.i),:])
+    robot.set_ang(np.random.rand()*2*math.pi)
+    radii.append(0.05)
 
 # keep track of obstacle positions and radii separately
 obstacle_positions = []
@@ -593,12 +651,6 @@ ego_puck.set_vel(0,0)
 # ego_puck.set_pos(start_positions[int(ego_puck.i),:])
 ego_puck.set_pos([0.25,0.75])
 ego_puck.set_ang(np.random.rand()*2*math.pi)
-
-# Set epuck starting parameters
-for robot in epuck:
-    robot.set_vel(0,0)
-    robot.set_pos(start_positions[int(robot.i),:])
-    robot.set_ang(np.random.rand()*2*math.pi)
 
     
 #%%
