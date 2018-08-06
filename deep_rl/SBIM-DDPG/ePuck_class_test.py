@@ -30,6 +30,7 @@ class ePuck:
     # ePuck geometric parameters
     wheel_sep = 0.053   # distance between wheels (m)
     wheel_rad = 0.02    # radius of wheels (m)
+    radius = 0.05       # radius of robot with buffer distance (m)
     
     # Braitenberg weights for obstacle avoidance
     brait_weights_leftMotor = [-1,1,2,-2,-1,0,0,0]
@@ -37,6 +38,8 @@ class ePuck:
     
     # Special Parameters for ego_puck
     number_laser_sensors = 181
+    sensor_angle = [-math.pi/2, math.pi/2]    # min and max angle of sensor
+    sensor_distance = 1         # max distance of sensor
     
 #----------------------------------------------------------------------------
         
@@ -148,7 +151,7 @@ class ePuck:
         
     def get_vel(self):
         
-        returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(clientID, self.handle, vrep.simx_opmode_buffer)
+        returnCode, self.linearVelocity, self.angularVelocity = vrep.simxGetObjectVelocity(clientID, self.handle, vrep.simx_opmode_buffer)
         
 #----------------------------------------------------------------------------
 # Read Sensors      
@@ -178,21 +181,13 @@ class ePuck:
 #----------------------------------------------------------------------------
 # Other functions
             
-    def distance_to_target(self,
+    def dist_ang_to_target(self,
                            target):
         
         position_np = np.array(self.position) 
         target_np = np.array(target)
-            
+        
         distance_to_target = np.linalg.norm(target_np - position_np)
-        
-        return distance_to_target
-    
-    def angle_to_target(self,
-                        target):
-        
-        position_np = np.array(self.position) 
-        target_np = np.array(target)
         
         xDelta = target_np[0] - position_np[0]
         yDelta = target_np[1] - position_np[1]
@@ -208,14 +203,66 @@ class ePuck:
         elif angle_to_target > math.pi:
             angle_to_target = angle_to_target - 2*math.pi
             
-        return angle_to_target
+        return distance_to_target, angle_to_target
+    
+    def relative_velocity(self,
+                          v_object: 'linear velocity of other object',
+                          angle: 'angle to other object in coordinate system of ego_bot'
+                          ):
         
+        # translate to world coordinate frame
+        alpha = self.angle + angle 
         
+        velocity_towards = (self.linearVelocity[0] - v_object[0])*math.cos(alpha) + (self.linearVelocity[1] - v_object[1])*math.sin(alpha)
+        velocity_perpendicular = (self.linearVelocity[1] - v_object[1])*math.cos(alpha) + (v_object[0] - self.linearVelocity[0])*math.sin(alpha)
+        
+        return velocity_towards, velocity_perpendicular
+        
+    
+    def dist_ang_to_objects(self,
+                            epucks: 'array containing other ePuck objects',
+                            obstacles: 'array of obstacles'):
+        
+        i = 0
+        
+        for robot in epucks:
+            distance, angle = self.dist_ang_to_target(robot.position)
+            if (distance < self.sensor_distance) and (self.sensor_angle[0] < angle < self.sensor_angle[1]):
+                self.scan_dist[i] = distance
+                self.scan_ang[i] = angle
+                self.velocity_towards[i], self.velocity_perpendicular[i] = self.relative_velocity(robot.linearVelocity, angle)
+                self.object_radii[i] = robot.radius
+            else:
+                self.scan_dist[i] = 0
+                self.scan_ang[i] = 0
+                self.velocity_towards[i] = 0
+                self.velocity_perpendicular[i] = 0
+                self.object_radii[i] = 0
+            i += 1
+            
+        for obs in obstacles:
+            distance, angle = self.dist_ang_to_target(obs.position)
+            if (distance < self.sensor_distance) and (self.sensor_angle[0] < angle < self.sensor_angle[1]):
+                self.scan_dist[i] = distance
+                self.scan_ang[i] = angle
+                self.velocity_towards[i], self.velocity_perpendicular[i] = self.relative_velocity([0,0], angle)
+                self.object_radii[i] = obs.radius
+            else:
+                self.scan_dist[i] = 0
+                self.scan_ang[i] = 0
+                self.velocity_towards[i] = 0
+                self.velocity_perpendicular[i] = 0
+                self.object_radii[i] = 0
+            i += 1
+            
+
     def move_to_target(self, 
                        target: '[x y] metres', 
                        linear_velocity: 'm/s',
                        stop_at_target: 'bool',
                        force_sens = False,
+                       laser_sens = False,
+                       radar_sens = False,
                        proximity_to_target = 0.05):
 
         self.get_pos()
@@ -233,18 +280,22 @@ class ePuck:
             if(sim_run == 0):
                 break
             
-            self.read_laser_sens()
+            self.get_pos()
+            self.get_ang()
+            self.get_vel()
+            
+            if laser_sens:
+                self.read_laser_sens()
+                
+            if radar_sens:
+                self.dist_ang_to_objects(epuck, obstacle)
             
             if force_sens:
                 self.read_force_sens()
                 if self.forceMag < 100:
                     self.forceMagList.append(self.forceMag)
             
-            self.get_pos()
-            self.get_ang()
-            
-            dist_to_target = self.distance_to_target(target_np)
-            ang_to_target = self.angle_to_target(target_np)
+            dist_to_target, ang_to_target = self.dist_ang_to_target(target_np)
             
             angular_velocity = 2*ang_to_target
 
@@ -296,6 +347,9 @@ class ePuck:
         
         while sim_run != 0:
             
+            self.get_pos()
+            self.get_ang()
+            self.get_vel()
             self.read_prox_sens()
             
             if(sum(self.proxDist[1:5])>0):
@@ -411,7 +465,7 @@ def initialise_vrep(scene_name: 'str',
     time.sleep(5)
     
     # Sets up communication between python and vrep
-    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,10000,5)
+    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,15000,5)
     
     if clientID!=-1:
         print('Connected to remote API server')
@@ -579,7 +633,7 @@ returnCode = []
 
 ego_puck = ePuck(0, True)
 
-number_epucks = 3
+number_epucks = 1
 epuck = []
 epuck.append(ePuck(1))
 
@@ -601,7 +655,7 @@ map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
         
 #%% Create obstacles
 obstacle = []
-number_obstacles = 3
+number_obstacles = 0
 
 for i in range(number_obstacles):
     obs_type = np.random.randint(2)
@@ -642,16 +696,21 @@ for obs in obstacle:
     obstacle_radii.append(obs.radius)
     obs.set_pos(obs.position)
 
+#%%%%%%%%%%%%%%%%%%%%%%%% Need to make zero objects possible
 # target position avoiding obstacles in map   
-target_positions = extra_position(map_points, np.array(obstacle_positions), obstacle_radii, 0.05)
-
+# target_positions = extra_position(map_points, np.array(obstacle_positions), obstacle_radii, 0.05)
+#%%%%%%%%%%%%%%%%%%%%%%%
 
 # Set ego_puck starting parameters
 ego_puck.set_vel(0,0)
 # ego_puck.set_pos(start_positions[int(ego_puck.i),:])
 ego_puck.set_pos([0.25,0.75])
 ego_puck.set_ang(np.random.rand()*2*math.pi)
-
+ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
+ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
+ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
+ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
+ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
     
 #%%
 
@@ -675,7 +734,7 @@ for i in range(number_epucks):
     
     t[i] = threading.Thread(target = epuck[i].random_walk, args = (robot_velocity,))
     
-t[number_epucks] = threading.Thread(target = ego_puck.move_to_target, args = ([1.75,0.75],0.1,True,True))
+t[number_epucks] = threading.Thread(target = ego_puck.move_to_target, args = ([1.75,0.75],0.1,True,True,False,True))
 
 for i in range(number_epucks+1):
     t[i].start()
