@@ -11,20 +11,43 @@ Created on Thu May 10 19:58:44 2018
 import vrep
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 import time
 import math
 from subprocess import Popen, PIPE
+from matplotlib import path
+import threading
+import matplotlib.pyplot as plt
+import epuck
 
 
+#%%
+        
+def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
+                    mean = 0.2,
+                    std_dev = 0.03):
+    
+    # changes int to 0 for cuboid, 2 for cylinder
+    obstacle_type_int *= 2
+    
+    # obstacle dimensions
+    obstacle_dimensions = [None]*3
+    obstacle_dimensions[0] = np.absolute(np.random.normal(mean,std_dev))
+    obstacle_dimensions[1] = np.absolute(np.random.normal(mean,std_dev))
+    obstacle_dimensions[2] = np.absolute(np.random.normal(mean,std_dev))
+    
+    # Call vrep function that creates pure shapes
+    res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createObstacle', [obstacle_type_int], obstacle_dimensions, [], emptyBuff, vrep.simx_opmode_blocking)
+    
+    obstacle_handle = retInts[0]
+    
+    return obstacle_handle, obstacle_dimensions
+
+    
 #%% Function to start VREP
 
 def initialise_vrep(scene_name: 'str', 
                     vrep_port: 'int', 
-                    headless: 'bool',
-                    start_sim: 'bool',
-                    sim_time: 'int', 
-                    quit_vrep_after_sim: 'bool'):
+                    headless: 'bool'):
     
     # Defines path to VREP folder
     path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
@@ -33,28 +56,13 @@ def initialise_vrep(scene_name: 'str',
     # Converts vrep initialisation settings to arguments recognised by vrep
     head_call = ''
     if headless:
-        head_call = '-h'
-        
-    start_sim_call = ''
-    if start_sim:
-        if sim_time > 0:
-            sim_time_milli = int(sim_time*1000)
-            start_sim_call = f'-s{sim_time_milli}'
-        elif sim_time == 0:
-            start_sim_call = '-s'
-        else:
-            raise ValueError('''sim_time (simulation duration) must be a 
-                             positive number, or zero for no time limit''')
-           
-    quit_after_sim = ''
-    if quit_vrep_after_sim:
-        quit_after_sim = '-q'
+        head_call = '-h'  
     
     # close all opened connections to vrep
     vrep.simxFinish(-1) 
     
     # Command-line call to initialise vrep
-    Popen(["nice", "-n", "-20", f"{path_to_vrep}/vrep.sh", head_call, start_sim_call, quit_after_sim,
+    Popen(["nice", "-n", "-20", f"{path_to_vrep}/vrep.sh", head_call, '', '',
            f"-gREMOTEAPISERVERSERVICE_{vrep_port}_FALSE_FALSE", 
            f"{path_to_scenes}/{scene_name}.ttt"], 
             stdout=PIPE, stderr=PIPE)
@@ -63,7 +71,7 @@ def initialise_vrep(scene_name: 'str',
     time.sleep(5)
     
     # Sets up communication between python and vrep
-    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,10000,5)
+    clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,15000,5)
     
     if clientID!=-1:
         print('Connected to remote API server')
@@ -73,378 +81,137 @@ def initialise_vrep(scene_name: 'str',
         
     return clientID
 
+#%%
+    
+def calculate_positions(map_points: 'np.array of points',
+                number_of_points: 'number of points to be calculated',
+                min_spacing: 'minimum euc distance between points'):
 
-#%% Set ePuck position, orientation and velocity
+    map_buffer = buffer_map(map_points, min_spacing)
+    
+    arena_dims = np.array([max(map_buffer[:,0]), max(map_buffer[:,1])])
+    
+    map_path = path.Path(map_buffer)
+    
+    positions = np.empty([number_of_points,2])
+    
+    for i in range(number_of_points):
+        position_added = False
+        
+        while not position_added:
+            position_candidate = np.random.rand(1,2)
+            position_candidate = np.multiply(position_candidate, arena_dims)
+         
+            if map_path.contains_point(position_candidate[0]):
+                if i > 0:
+                    for j in range(0,i):
+                        if(np.linalg.norm(position_candidate - positions[j,:]) < min_spacing):
+                            break
+                        if(j == i-1):
+                            positions[i,:] = position_candidate
+                            position_added = True
+                else:
+                    positions[i,:] = position_candidate
+                    position_added = True
 
-def set_pos_ang(clientID: 'int',
-                handle_robot: 'int',
-                position: '[x y z] metres',
-                angle: 'rad'):
-    
-    # Set position
-    returnCode = vrep.simxSetObjectPosition(
-            clientID, handle_robot, -1, position, vrep.simx_opmode_oneshot)
-    
-    # Convert angle to euler angle
-    eulerAngles = [0, 0, angle]
-    
-    # Set orientation
-    returnCode = vrep.simxSetObjectOrientation(
-            clientID, handle_robot, -1, eulerAngles, vrep.simx_opmode_oneshot)
-    
-    
-#%% Set wheel velocities
-    
-def set_vel(clientID: 'int',
-            handle: 'int',
-            handle_leftJoint: 'int', 
-            handle_rightJoint: 'int',
-            linear_velocity: 'm/s',
-            angular_velocity: 'rad/sec'):
-    
-    # ePuck geometric parameters
-    wheel_sep = 0.053   # distance between wheels (m)
-    wheel_rad = 0.02    # radius of wheels (m)
-    
-    # Convert to wheel velocities
-    vel_r = linear_velocity + wheel_sep*angular_velocity/2
-    vel_l = linear_velocity - wheel_sep*angular_velocity/2
-    
-    # Convert to wheel angular velocities
-    omega_r = vel_r/wheel_rad
-    omega_l = vel_l/wheel_rad
-    
-    returnCode = vrep.simxSetJointTargetVelocity(
-                clientID, handle_leftJoint, omega_l, vrep.simx_opmode_streaming)
-    
-    returnCode = vrep.simxSetJointTargetVelocity(
-                clientID, handle_rightJoint, omega_r, vrep.simx_opmode_streaming)
-    
-#%% Function: move to target
-    
-def move_to_target(clientID,
-                   handle_robot,
-                   handle_force_sensor,
-                   handle_leftJoint,
-                   handle_rightJoint,
-                   linear_velocity,
-                   target: '[x y] metres',
-                   proximity_to_target = 0.05):
+    return positions
 
-    returnCode, position = vrep.simxGetObjectPosition(
-            clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-    
-    pos_start_2d = np.array([position[0], position[1]])
-    pos_target_2d = np.array([target[0], target[1]])
-    dist_to_target = np.linalg.norm(pos_target_2d - pos_start_2d)
-    
-    time_step = 0.02
-    
-    cmdTimeStart = vrep.simxGetLastCmdTime(clientID)
 
-    while dist_to_target > proximity_to_target:
+def extra_position(map_points: 'np.array of points',
+                 positions: 'positions',
+                 radii: 'array of radii of existing objects',
+                 radius: 'radius of new object'):
+    
+    map_buffer = buffer_map(map_points, radius)
+    
+    arena_dims = np.array([max(map_buffer[:,0]), max(map_buffer[:,1])])
+    
+    map_path = path.Path(map_buffer)
+    
+    position_added = False
+    
+    while not position_added:
+        position_candidate = np.random.rand(1,2)
+        position_candidate = np.multiply(position_candidate, arena_dims)
+        print(f'Position Candidate: {position_candidate}')
+        
+        if map_path.contains_point(position_candidate[0]):
+            for j in range(0,positions.shape[0]):
+                min_spacing = radii[j] + radius
+                if(np.linalg.norm(position_candidate - positions[j,:]) < min_spacing):
+                    print(np.linalg.norm(position_candidate - positions[j,:]))
+                    break
+                if(j == positions.shape[0]-1):
+                    position_added = True
+        
+    return position_candidate[0]
 
-        time.sleep(time_step)
-        
-        returnCode, state, forceVectorLink, torqueVector = vrep.simxReadForceSensor(
-                clientID, handle_force_sensor, vrep.simx_opmode_buffer)
-        forceMagLink = np.linalg.norm(forceVectorLink)
-        
-        returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-                clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-        
-        returnCode, position = vrep.simxGetObjectPosition(
-                clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-        
-        xCurrent = position[0]
-        yCurrent = position[1]
-        
-        pos_current_2d = np.array([xCurrent, yCurrent])
-        
-        xDelta = target[0] - xCurrent
-        yDelta = target[1] - yCurrent
-        
-        phi_current = eulerAngles[2]
-        phi_target = math.atan2(yDelta, xDelta)
-        phi_delta = phi_target - phi_current
-        
-        if phi_delta < -math.pi:
-            phi_delta = phi_delta + 2*math.pi
-        elif phi_delta > math.pi:
-            phi_delta = phi_delta - 2*math.pi
+
+def delete_epucks():
+    
+    for robot in epuck:
+        if robot.i != '1':
+            vrep.simxRemoveModel(clientID, robot.handle, vrep.simx_opmode_oneshot)
             
-        
-        cmdTime = vrep.simxGetLastCmdTime(clientID)
-        
-        time_on_target = cmdTime - cmdTimeStart
-        
-        if forceMagLink < 100:
-#            forceMagLinkAll.append(forceMagLink)
-#            cmdTimeAll.append(cmdTime/1000)
+            
+def delete_objects(object_array):
     
-            if forceMagLink > 0.4:
-                print('collision!')
-                return 1
-            elif cmdTime >= sim_time*1000 or time_on_target >= 10000:
-                print('timeout')
-                return 2
-            else:
-                set_vel(clientID, handle_robot, handle_leftJoint, handle_rightJoint, 
-                        linear_velocity, 2*phi_delta)
-                
-        dist_to_target = np.linalg.norm(pos_target_2d - pos_current_2d)
-    
-    return 0
+    for obj in object_array:
+        vrep.simxRemoveObject(clientID, obj.handle, vrep.simx_opmode_oneshot)
         
-    # Plot force sensor graph
-#    fig1 = plt.figure()
-#    ax1 = fig1.add_subplot(1,1,1)
-#    ax1.plot(cmdTimeAll,forceMagLinkAll)
-#    plt.show()
-    
-#%% function: turn to target
-    
-def turn_to_target(clientID,
-                   handle_robot,
-                   handle_leftJoint,
-                   handle_rightJoint,
-                   target: '[x y] metres'):
-    
-    returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-            clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-    
-    returnCode, position = vrep.simxGetObjectPosition(
-            clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-    
-    xDelta = target[0] - position[0]
-    yDelta = target[1] - position[1]
         
-    phi_current = eulerAngles[2]
-    phi_target = math.atan2(yDelta, xDelta)
-    phi_delta = phi_target - phi_current
-    print(phi_delta)
-
-    while abs(phi_delta) > 0.1:
-        
-        returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-                clientID, handle_robot, -1, vrep.simx_opmode_buffer)
-        
-        returnCode, position = vrep.simxGetObjectPosition(
-                clientID, handle_robot, -1, vrep.simx_opmode_buffer)
+def buffer_map(map_points: 'n x 2 numpy array',
+               buffer = 0.1):
     
-        xDelta = target[0] - position[0]
-        yDelta = target[1] - position[1]
-        
-        phi_current = eulerAngles[2]
-        phi_target = math.atan2(yDelta, xDelta)
-        phi_delta = phi_target - phi_current
-        
-        if phi_delta > 0:
-            omega = 2
+    map_buffer = map_points.flatten()
+    
+    for i in range(map_buffer.size):
+        if map_buffer[i] == 0:
+            map_buffer[i] += buffer
         else:
-            omega = -2
+            map_buffer[i] -= buffer
+    
+    map_buffer = map_buffer.reshape(-1,2)
+    
+    return map_buffer
 
-        set_vel(clientID, handle_robot, handle_leftJoint, handle_rightJoint, 
-                0, omega)
+def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
+                 turn_angle):
+    
+    _, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [sensor_handle], vrep.simx_opmode_blocking)
+    
+    new_sensor_handle = newObjectHandles[0]
+    
+    _, parent_handle = vrep.simxGetObjectParent(clientID, sensor_handle, vrep.simx_opmode_blocking)
+    
+    vrep.simxSetObjectParent(clientID, new_sensor_handle, parent_handle, True, vrep.simx_opmode_oneshot)
+    
+    vrep.simxSetObjectOrientation(clientID, new_sensor_handle, sensor_handle, [0,(turn_angle*math.pi)/180,1], vrep.simx_opmode_oneshot)
+    
+    return new_sensor_handle
 
-#%% Setup Weights for path plan
 
-def setup_weights(arena_dimensions,
-                  node_spacing = 0.1):
+def create_sensor_array(sensor_name: 'name of sensor to be cloned',
+                        number_sensors: 'number to be added',
+                        angle_between_sensors: 'deg'):
     
-    arena_length_x = arena_dimensions[0]
-    arena_length_y = arena_dimensions[1]
-    
-    x_num = int(round(arena_length_x/node_spacing-1))
-    y_num = int(round(arena_length_y/node_spacing-1))
-    
-    x_coords = np.linspace(0, arena_length_x, x_num+2)
-    y_coords = np.linspace(0, arena_length_y, y_num+2)
-    
-    coords = np.zeros((x_num+2, y_num+2, 2))
-    weights = np.zeros((x_num+2, y_num+2))
-    
-    for i in range(1, x_num+1):
-        for j in range(1, y_num+1):
-            coords[i,j,0] = x_coords[i]
-            coords[i,j,1] = y_coords[j]
-            weights[i,j] = 1
-        
-    return weights, coords
+    _, sensor_handle = vrep.simxGetObjectHandle(clientID, sensor_name, vrep.simx_opmode_blocking)
 
-#%% Path Plan
+    laser_sensor_handles = []
+    
+    for i in range(number_sensors):
+        turn_angle = (i+1)*angle_between_sensors
+        new_sensor_handle = clone_sensor(sensor_handle, turn_angle)
+        laser_sensor_handles.append(new_sensor_handle)
         
-def path_plan(start: '[x y]',
-              target: '[x y]',
-              coords: 'numpy matrix',
-              weights: 'numpy matrix',
-              node_spacing=0.1):
-    
-    start_index = [int(round(start[0]/node_spacing)), int(round(start[1]/node_spacing))]
-    target_index = [int(round(target[0]/node_spacing)), int(round(target[1]/node_spacing))]
-    
-    if target_index[0] == 0:
-        target_index[0] = 1      
-    elif target_index[1] == 0:
-        target_index[1] = 1
-    elif target_index[0] == np.size(weights[0]):
-        target_index[0] -= 1
-    elif target_index[1] == np.size(weights[1]):
-        target_index[1] -= 1
-    
-    
-    x_int_start_ind = start_index[0]
-    y_int_start_ind = start_index[1]
-    
-    path = [start_index]
-    directions = []
-    
-    while x_int_start_ind != target_index[0] or y_int_start_ind != target_index[1]:
-        
-        weights_neigh = np.zeros(9)
-        k = 0
-        weights_cum = 0
-        for x_delta in range(-1,2):
-            for y_delta in range(-1,2):
-                if x_delta != 0 or y_delta != 0:
-                    x_neigh = x_int_start_ind + x_delta
-                    y_neigh = y_int_start_ind + y_delta
-                    if all(node != [x_neigh, y_neigh] for node in path):
-                        euc_dist = math.sqrt((coords[x_neigh, y_neigh, 0] - target[0])**2 
-                                             + (coords[x_neigh, y_neigh, 1] - target[1])**2)
-                        weights_neigh[k] = weights[x_neigh, y_neigh]
-                        weights_cum += weights_neigh[k]
-                k += 1
-                
-        if all(weights_neigh == 0):
-            k = 0
-            weights_cum = 0
-            for x_delta in range(-1,2):
-                for y_delta in range(-1,2):
-                    if x_delta != 0 or y_delta != 0:
-                        x_neigh = x_int_start_ind + x_delta
-                        y_neigh = y_int_start_ind + y_delta
-                        euc_dist = math.sqrt((coords[x_neigh, y_neigh, 0] - target[0])**2 
-                                             + (coords[x_neigh, y_neigh, 1] - target[1])**2)
-                        weights_neigh[k] = weights[x_neigh, y_neigh]
-                        weights_cum += weights_neigh[k]
-                    k += 1
-            
-        
-        weights_neigh_norm = 0
-      
-        rand_num = np.random.rand()
-        
-        k = 0
-        for weight in weights_neigh:
-            weights_neigh_norm += weight/weights_cum
-            if rand_num < weights_neigh_norm:
-                directions.append(k)
-                delta = neighbour_delta(k)
-                break
-            k += 1
-        
-        x_int_targ_ind = x_int_start_ind + delta[0]
-        y_int_targ_ind = y_int_start_ind + delta[1]
-        
-        path.append([x_int_targ_ind, y_int_targ_ind])
-        
-        x_int_start_ind = x_int_targ_ind
-        y_int_start_ind = y_int_targ_ind
-        
-    path_np = np.array(path)
-    
-    for i in range(0, len(path_np)-3):
-        for j in range(len(path_np)-1, i+1,-1):
-            if j >= len(path_np)-1:
-                continue
-            x_i = path_np[i,0]
-            y_i = path_np[i,1]
-            x_j = path_np[j,0]
-            y_j = path_np[j,1]
-            k = 0
-            for x_delta in range(-1,2):
-                for y_delta in range(-1,2):
-                    x_i_neigh = x_i + x_delta
-                    y_i_neigh = y_i + y_delta
-                    if x_i_neigh == x_j and y_i_neigh == y_j:
-                        if weights[x_i, y_i] > 0.1:
-                            print(f'taking a shortcut from point {i} to point {j}')
-                            for h in range(i+1, j):
-                                path_np = np.delete(path_np, (i+1), axis = 0)
-                                del directions[i]
-                            del directions[i]
-                            directions.insert(i, k)
-                    k += 1
-                        
-                    
-    path_coords = np.zeros((len(path_np),2))
-    
-    for i in range(0,len(path_np)):
-        path_coords[i,0] = coords[path_np[i,0], path_np[i,1],0]
-        path_coords[i,1] = coords[path_np[i,0], path_np[i,1],1]
-    
-    return path_coords, path_np, directions
+    return laser_sensor_handles
 
-#%% Plot path
+        
 
-def plot_path(coords,
-              start,
-              target,
-              path_coords,
-              arena_dimensions = [2, 1.5],
-              crash_point = [0, 0]):
+#%%--------------------------------------------------------------- 
+# Main script
     
-    arena_length_x = arena_dimensions[0]
-    arena_length_y = arena_dimensions[1]
-    
-    fig = plt.figure()
-    ax1 = fig.add_subplot(1,1,1)
-
-    for i in range(0, np.shape(coords)[0]):
-        for j in range(0, np.shape(coords)[1]):
-            ax1.scatter(coords[i,j,0], coords[i,j,1], c='k', marker='.', s=10)
-    
-    arena = np.array([[0,0],[0, arena_length_y],[arena_length_x, arena_length_y],[arena_length_x, 0],[0,0]])
-    
-    ax1.scatter(start[0], start[1], c='g', marker='8', s=200)
-    ax1.scatter(target[0], target[1], c='g', marker='X', s=200)
-    ax1.plot(arena[:,0], arena[:,1])
-    ax1.plot(path_coords[:,0], path_coords[:,1])
-    
-    if crash_point[0] != 0 and crash_point[1] != 0:
-        ax1.scatter(crash_point[0], crash_point[1], c='r', marker='X', s=200)
-    
-    plt.show()
-    
-#%% Neighbour paths
-    
-def neighbour_paths(k):
-    
-    if k == 0: n = [1,3]
-    elif k == 1: n = [0,2]
-    elif k == 2: n = [1,5]
-    elif k == 3: n = [0,6]
-    elif k == 4: print('k should not be 4')
-    elif k == 5: n = [2,8]
-    elif k == 6: n = [3,7]
-    elif k == 7: n = [6,8]
-    elif k == 8: n = [7,5]
-    
-    return n
-
-def neighbour_delta(n):
-    
-    k = 0
-    for x_delta in range(-1,2):
-        for y_delta in range(-1,2):
-            if k == n:
-                return np.array([x_delta, y_delta])
-            k += 1
-
-    
-#%% Main script
-    
+# Prompt user for vrep startup options    
 answer = 0
 while answer == 0:
     
@@ -452,134 +219,144 @@ while answer == 0:
     start_vrep = input("Start a new vrep session, y/n? ")
     if start_vrep == 'y':
         # initialise vrep
-        headless = False
-        quit_after_sim = False
-        sim_time = 0
-        
+        headless = False        
         headless_yn = input("Headless? y/n ")
         if headless_yn == 'y':
             headless = True
-            start_sim_yn = input("Start the simulation immediately? y/n ")
-            if start_sim_yn == 'y':
-                start_sim = True
-            quit_after_sim_yn = input("Quit V-REP after the simulation? y/n ")
-            if quit_after_sim_yn == 'y':
-                quit_after_sim = True
                 
-        sim_time = int(input('Enter the duration of the simulation (seconds): '))
-        
         clientID = initialise_vrep(
-                    'epuck_arena_multi', 19999, headless, start_sim, 0, quit_after_sim)
+                    'epuck_arena_multi_spawn', 19998, headless)
         answer = 1
     elif start_vrep == 'n':
-        sim_time = int(input('Enter the duration of the simulation (seconds): '))
         clientID = 0
         answer = 1
     else:
         print("please type 'y' to start vrep or 'n' to use open vrep program\n")            
-            
-#%% Get all object handles
 
-ts1 = time.time()
+#%% Setup ePuck objects
 
-returnCode, handles, intData, floatData, stringData = vrep.simxGetObjectGroupData(
-        clientID, vrep.sim_appobj_object_type, 0, vrep.simx_opmode_blocking)
+returnCode = []
 
-for i in range(len(handles)):
-    exec(stringData[i] + f"={handles[i]}")
+ego_puck = ePuck(0, True)
+
+number_epucks = 3
+epuck = []
+epuck.append(ePuck(1))
+
+for i in range(2, number_epucks+1):
+    returnCode, newObjectHandles = vrep.simxCopyPasteObjects( clientID, [epuck[0].handle], vrep.simx_opmode_blocking)
+    robot = ePuck(i)
+    epuck.append(robot)
 
     
-#%% Setup streaming calls
-
-returnCode, linearVelocity, angularVelocity = vrep.simxGetObjectVelocity(
-        clientID, ePuck, vrep.simx_opmode_streaming)
-
-returnCode, state, forceVectorLink, torqueVector = vrep.simxReadForceSensor(
-        clientID, ePuck_link, vrep.simx_opmode_streaming)
-
-returnCode, eulerAngles = vrep.simxGetObjectOrientation(
-        clientID, ePuck, -1, vrep.simx_opmode_streaming)
-
-returnCode, position = vrep.simxGetObjectPosition(
-        clientID, ePuck, -1, vrep.simx_opmode_streaming)
+#%% Size of arena (map)
     
+map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
+
+# Confine start point to first quartile
+map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
+
+# Confine target point to end quarter of arena
+map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
+        
+#%% Create obstacles
+obstacle = []
+number_obstacles = 3
+
+for i in range(number_obstacles):
+    obs_type = np.random.randint(2)
+    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
+    if obs_type == 0:
+        obstacle.append(cuboid(obstacle_handle, obstacle_dimensions))
+    else:
+        obstacle.append(cylinder(obstacle_handle, obstacle_dimensions))
+
+#%% Randomise ePuck starting positions
+
+
+# Minimum initial spacing between robots (m)
+epuck_min_spacing = 0.2     
+
+# Randomised starting position with minimum spacing and buffer dist from arena walls
+start_positions = calculate_positions(map_points, number_epucks+1, epuck_min_spacing)
+
+# array of robot and obstacle radii, used to avoid placing obstacles on top of robots
+radii = [0.05]
+
+# Set epuck starting parameters
+for robot in epuck:
+    robot.set_vel(0,0)
+    robot.set_pos(start_positions[int(robot.i),:])
+    robot.set_ang(np.random.rand()*2*math.pi)
+    radii.append(0.05)
+
+# keep track of obstacle positions and radii separately
+obstacle_positions = []
+obstacle_radii = []
+
+# Caluclate positions for obstacles that dont impact robot positions
+for obs in obstacle:
+    radii.append(obs.radius)
+    obs.position = extra_position(map_points, start_positions, radii, obs.radius)
+    obstacle_positions.append(obs.position)
+    obstacle_radii.append(obs.radius)
+    obs.set_pos(obs.position)
+
+#%%%%%%%%%%%%%%%%%%%%%%%% Need to make zero objects possible
+# target position avoiding obstacles in map   
+# target_positions = extra_position(map_points, np.array(obstacle_positions), obstacle_radii, 0.05)
+#%%%%%%%%%%%%%%%%%%%%%%%
+
+# Set ego_puck starting parameters
+ego_puck.set_vel(0,0)
+# ego_puck.set_pos(start_positions[int(ego_puck.i),:])
+ego_puck.set_pos([0.25,0.75])
+ego_puck.set_ang(np.random.rand()*2*math.pi)
+ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
+ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
+ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
+ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
+ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
     
-#%% Set initial posiition, orientation and velocity parameters of the ePuck
+#%%
 
-arena_dimensions = [2, 1.5]
-
-start = [1.0, 0.5]
-
-pos_init = [start[0], start[1], 0.21915] # initial position of ePuck
-ang_init = math.pi/2 # angle of ePuck from the x-axis (rad)
-    
-set_pos_ang(clientID, ePuck, pos_init, ang_init)
-
-#%% Path Plan
-
-node_spacing = 0.1
-weights, coords = setup_weights(arena_dimensions, node_spacing)
-
-#%% Obstacle avoidance parameters
-
-
-
-#%% Run simulation
-
-if start_sim != True:
-    start_sim = input("Start the simulation, press Enter (or n to cancel): ")
-    if start_sim == 'n':
-        sys.exit()
-    
-outcome = 0
-target_no = 1
-path_coords = []
-trials = 0
-
-x_max = np.size(weights[0])
-y_max = np.size(weights[1])
-
-target = [np.random.rand()*arena_dimensions[0], np.random.rand()*arena_dimensions[1]]
-
-path_coords, path_indices, directions = path_plan(start, target, coords, weights, node_spacing)
-plot_path(coords, start, target, path_coords)
+start_sim = input("Start the simulation, press Enter (or n to cancel): ")
+if start_sim == 'n':
+    delete_epucks()
+    delete_objects(obstacle)
+    sys.exit()
 
 returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
 
-turn_to_target(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 
-       path_coords[target_no,:])
+time.sleep(1)
 
-while outcome == 0 and target_no < len(path_coords):
-    outcome = move_to_target(clientID, ePuck, ePuck_link, ePuck_leftJoint, 
-                             ePuck_rightJoint, 0.1, path_coords[target_no,:], 0.05)
-    if outcome == 0:
-        target_no += 1
+t = [None]*(number_epucks+1)
 
-returnCode = vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)    
+stop_event = threading.Event()
+
+for i in range(number_epucks):
+    robot_velocity = np.absolute(np.random.normal(0.1,0.02))
+    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
     
-
-set_vel(clientID, ePuck, ePuck_leftJoint, ePuck_rightJoint, 0, 0)
-
-print(f'outcome: {outcome}')
-print(path_coords)
-
-cmdTime = vrep.simxGetLastCmdTime(clientID)
-ts2 = time.time()
-real_time_lapsed = ts2-ts1
-print(f'Simulation Time: {cmdTime/1000}')
-print(f'Real Time: {real_time_lapsed}')
-
-
-weight_range = 20
-weights_norm = weights
-
-while weight_range > 2:
-    weights_norm = weights_norm**0.5
+    t[i] = threading.Thread(target = epuck[i].random_walk, args = (robot_velocity,))
     
-    weight_range = np.amax(weights_norm) - np.min(weights_norm[np.nonzero(weights)])
-    
-plt.imshow(weights_norm.T,interpolation='gaussian', origin='lower')
-    
+t[number_epucks] = threading.Thread(target = ego_puck.move_to_target, args = ([1.75,0.75],0.1,True,True,False,True))
 
+for i in range(number_epucks+1):
+    t[i].start()
+
+for i in range(number_epucks+1):
+    t[i].join()
+
+for i in range(number_epucks):
+    epuck[i].set_vel(0,0)
+
+
+#%% Delete extra epucks
+    
+delete_epucks()
+delete_objects(obstacle)
+        
+plt.plot(ego_puck.forceMagList)
 
 
