@@ -17,7 +17,7 @@ emptyBuff = bytearray()
 
 #%% ePuck class
 
-class ePuck:
+class epuck:
     
     # ePuck geometric parameters
     wheel_sep = 0.053   # distance between wheels (m)
@@ -305,7 +305,7 @@ class ePuck:
                 self.read_laser_sens()
                 
             if radar_sens:
-                self.dist_ang_to_objects(epuck, obstacle)
+                self.dist_ang_to_objects(epucks, obstacles)
                 self.dist_to_walls(map_points)
             
             if force_sens:
