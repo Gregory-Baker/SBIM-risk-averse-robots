@@ -239,7 +239,7 @@ returnCode = []
 
 ego_puck = ePuck(0, True)
 
-number_epucks = 3
+number_epucks = 6
 epuck = []
 epuck.append(ePuck(1))
 
@@ -253,15 +253,10 @@ for i in range(2, number_epucks+1):
     
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
-# Confine start point to first quartile
-map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
-
-# Confine target point to end quarter of arena
-map_start = np.array([[0,0],[0,1.5],[0.5,1.5],[0.5,0]])
         
 #%% Create obstacles
 obstacle = []
-number_obstacles = 3
+number_obstacles = 5
 
 for i in range(number_obstacles):
     obs_type = np.random.randint(2)
@@ -278,7 +273,7 @@ for i in range(number_obstacles):
 epuck_min_spacing = 0.2     
 
 # Randomised starting position with minimum spacing and buffer dist from arena walls
-start_positions = calculate_positions(map_points, number_epucks+1, epuck_min_spacing)
+start_positions = calculate_positions(map_points, number_epucks+2, epuck_min_spacing)
 
 # array of robot and obstacle radii, used to avoid placing obstacles on top of robots
 radii = [0.05]
@@ -309,8 +304,8 @@ for obs in obstacle:
 
 # Set ego_puck starting parameters
 ego_puck.set_vel(0,0)
-# ego_puck.set_pos(start_positions[int(ego_puck.i),:])
-ego_puck.set_pos([0.25,0.75])
+ego_puck.set_pos(start_positions[int(ego_puck.i),:])
+#ego_puck.set_pos([0.25,0.75])
 ego_puck.set_ang(np.random.rand()*2*math.pi)
 ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
 ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)

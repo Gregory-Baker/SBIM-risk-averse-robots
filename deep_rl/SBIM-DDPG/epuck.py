@@ -85,7 +85,8 @@ class ePuck:
             for i in range(self.number_laser_sensors):
                 _, self.laserSensor[i], self.laserPoint[i], _, _ = vrep.simxReadProximitySensor(clientID, self.laserSensorHandle[i], vrep.simx_opmode_streaming)
         
-            
+            self.distance_to_wall = [0]*4
+            self.velocity_towards_wall[0]*4
 #----------------------------------------------------------------------------
 # Setters
         
@@ -251,7 +252,26 @@ class ePuck:
                 self.velocity_perpendicular[i] = 0
                 self.object_radii[i] = 0
             i += 1
-            
+    
+    
+    def dist_to_walls(self,
+                      map_points: 'works on square maps only'):
+        
+        arena_dims = [max(map_points[:,0]), max(map_points[:,1])]
+        
+        self.distance_to_wall[0] = self.position[0]
+        self.distance_to_wall[1] = arena_dims[1] - self.position[1]
+        self.distance_to_wall[2] = arena_dims[0] - self.position[0]
+        self.distance_to_wall[3] = self.position[1]
+        
+    def velocity_inputs(self):
+        
+        self.velocity_inputs[0] = self.linearVelocity[0]
+        self.velocity_inputs[1] = self.linearVelocity[1]
+        self.velocity_inputs[2] = self.angularVelocity[2]
+        
+
+#-----------------------------------------------------------------------------
 
     def move_to_target(self, 
                        target: '[x y] metres', 
@@ -286,6 +306,7 @@ class ePuck:
                 
             if radar_sens:
                 self.dist_ang_to_objects(epuck, obstacle)
+                self.dist_to_walls(map_points)
             
             if force_sens:
                 self.read_force_sens()
