@@ -444,12 +444,18 @@ class cylinder (obstacle):
         self.height = dimensions[2]
         self.type = 1
         
+class dummy (obstacle):
+    
+    def __init__ (self, handle, dimensions):
+        super().__init__(handle, dimensions)
+        self.height = dimensions
+        
 
 #%%
         
 def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
-                    mean = 0.2,
-                    std_dev = 0.03):
+                    mean = 0.18,
+                    std_dev = 0.05):
     
     # changes int to 0 for cuboid, 2 for cylinder
     obstacle_type_int *= 2
@@ -458,7 +464,7 @@ def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
     obstacle_dimensions = [None]*3
     obstacle_dimensions[0] = np.absolute(np.random.normal(mean,std_dev))
     obstacle_dimensions[1] = np.absolute(np.random.normal(mean,std_dev))
-    obstacle_dimensions[2] = np.absolute(np.random.normal(mean,std_dev))
+    obstacle_dimensions[2] = 0.2
     
     # Call vrep function that creates pure shapes
     res, retInts, retFloats, retStrings, retBuffer = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'createObstacle', [obstacle_type_int], obstacle_dimensions, [], emptyBuff, vrep.simx_opmode_blocking)
@@ -467,7 +473,19 @@ def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
     
     return obstacle_handle, obstacle_dimensions
 
+def create_dummy(dummy_size,
+                 colors = None):
     
+    returnCode, dummyHandle = vrep.simxCreateDummy(clientID, dummy_size, colors, vrep.simx_opmode_blocking)
+    
+    return dummyHandle
+
+def get_dummy_handle():
+    
+    _, dummyHandle = vrep.simxGetObjectHandle(clientID, 'Dummy', vrep.simx_opmode_blocking)
+    
+    return dummyHandle
+                                     
 #%% Function to start VREP
 
 def initialise_vrep(scene_name: 'str', 
@@ -714,6 +732,11 @@ print(f'Number of active ePucks: {number_active_epucks}')
 
 # Randomised starting position with minimum spacing and buffer dist from arena walls
 start_positions = calculate_positions(map_points, number_active_epucks+2, epuck_min_spacing)
+target_position = start_positions[len(start_positions)-1,:]
+
+# Move dummy to highlight target position
+target_dummy = dummy(get_dummy_handle(),0.05)
+target_dummy.set_pos(target_position)
 
 # Set epuck starting parameters
 for robot in epucks:
@@ -736,7 +759,7 @@ for obs in obstacles:
 for i in range(number_active_obstacles):
     obstacles[i].set_pos(obstacles[i].position)
     obstacles[i].set_ang(np.random.rand()*2*math.pi)
-
+    
 
 # Set ego_puck starting parameters
 ego_puck.set_vel(0,0)
@@ -772,7 +795,7 @@ for i in range(number_active_epucks):
     
     t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
     
-t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (start_positions[len(start_positions)-1,:],0.1,True,True,False,True))
+t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (target_position,0.1,True,True,False,True))
 
 for i in range(number_active_epucks+1):
     t[i].start()
