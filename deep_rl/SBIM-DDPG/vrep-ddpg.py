@@ -96,6 +96,7 @@ class epuck:
         
             self.distance_to_wall = [0]*4
             self.velocity_towards_wall = [0]*4
+            self.velocity = [0]*3
 #----------------------------------------------------------------------------
 # Setters
         
@@ -292,9 +293,9 @@ class epuck:
         
     def velocity_inputs(self):
         
-        self.velocity_inputs[0] = self.linearVelocity[0]
-        self.velocity_inputs[1] = self.linearVelocity[1]
-        self.velocity_inputs[2] = self.angularVelocity[2]
+        self.velocity[0] = self.linearVelocity[0]
+        self.velocity[1] = self.linearVelocity[1]
+        self.velocity[2] = self.angularVelocity[2]
         
 
 #-----------------------------------------------------------------------------
@@ -327,21 +328,24 @@ class epuck:
             self.get_ang()
             self.get_vel()
             
+            dist_to_target, ang_to_target = self.dist_ang_to_target(target_np)
+            
             if laser_sens:
                 self.read_laser_sens()
                 
             if radar_sens:
                 self.dist_ang_to_objects(epucks, obstacles)
                 self.dist_to_walls(map_points)
-            
+                self.velocity_inputs()
+                self.nn_input = np.concatenate((self.scan_matrix.flatten(), np.array(self.distance_to_wall), np.array(self.velocity), [dist_to_target], [ang_to_target]))
+
+
             if force_sens:
                 self.read_force_sens()
                 if self.forceMag < 100:
                     self.forceMagList.append(self.forceMag)
                     if self.forceMag > 0.4:
                         print(f'Force on Robot: {self.forceMag}')
-            
-            dist_to_target, ang_to_target = self.dist_ang_to_target(target_np)
             
             angular_velocity = 2*ang_to_target
 
@@ -520,7 +524,7 @@ def initialise_vrep(scene_name: 'str',
     if headless:
         head_call = '-h'  
     
-    # close all opened connections to vrep
+    # close all opened connections to vrep_input
     vrep.simxFinish(-1) 
     
     # Command-line call to initialise vrep
