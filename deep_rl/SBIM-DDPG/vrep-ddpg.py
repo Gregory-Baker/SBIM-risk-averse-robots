@@ -102,6 +102,8 @@ class epuck:
     def set_pos(self, 
                 position: '[x y] metres'):
         
+        self.position = position
+        
         position = np.array(position)
         position = position.tolist()
         
@@ -261,6 +263,21 @@ class epuck:
                 self.velocity_perpendicular[i] = 0
                 self.object_radii[i] = 0
             i += 1
+            
+        scan_matrix_trans = np.stack((self.scan_dist, 
+                                      self.scan_ang,
+                                      self.velocity_towards,
+                                      self.velocity_perpendicular,
+                                      self.object_radii))
+        
+        scan_matrix = scan_matrix_trans.T
+        scan_matrix_nonzero = scan_matrix[scan_matrix[:,0].nonzero()[0]]
+        scan_matrix_nonzero_sorted = scan_matrix_nonzero[scan_matrix_nonzero[:,0].argsort()]
+        num_zero_cols = scan_matrix.shape[0] - scan_matrix_nonzero.shape[0]
+        scan_matrix_pad = np.zeros(scan_matrix.shape)
+        scan_matrix_pad[:-num_zero_cols, :] = scan_matrix_nonzero_sorted
+        
+        self.scan_matrix = scan_matrix_pad
     
     
     def dist_to_walls(self,
@@ -407,6 +424,8 @@ class obstacle:
         
     def set_pos(self, 
             position: '[x y] metres'):
+        
+        self.position = position
     
         position = np.array(position)
         position = position.tolist()
@@ -473,7 +492,7 @@ def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
     
     return obstacle_handle, obstacle_dimensions
 
-def create_dummy(dummy_size,
+def create_dummy(dummy_size = 0.05,
                  colors = None):
     
     returnCode, dummyHandle = vrep.simxCreateDummy(clientID, dummy_size, colors, vrep.simx_opmode_blocking)
@@ -588,9 +607,9 @@ def extra_position(map_points: 'np.array of points',
     return position_candidate[0]
 
 
-def delete_epucks():
+def delete_epucks(epucks):
     
-    for robot in epuck:
+    for robot in epucks:
         if robot.i != '1':
             vrep.simxRemoveModel(clientID, robot.handle, vrep.simx_opmode_oneshot)
             
@@ -718,7 +737,11 @@ for i in range(number_obstacles):
     obstacles[i].set_pos([-1.2,0.5])
 
 #%% Randomise ePuck starting positions
-
+    
+# reset ePuck positions
+for robot in epucks:
+    x_pos = -1 -int(robot.i)/10
+    robot.set_pos([x_pos, 1])
 
 # Minimum initial spacing between robots (m)
 epuck_min_spacing = 0.2
@@ -754,9 +777,9 @@ print(f'Number of obstacles: {number_active_obstacles}')
 # Caluclate positions for obstacles that dont impact robot positions
 for obs in obstacles:
     radii.append(obs.radius)
-    obs.position = extra_position(map_points, start_positions, radii, obs.radius)
 
 for i in range(number_active_obstacles):
+    obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
     obstacles[i].set_pos(obstacles[i].position)
     obstacles[i].set_ang(np.random.rand()*2*math.pi)
     
@@ -777,7 +800,6 @@ ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
 
 start_sim = input("Start the simulation, press Enter (or n to cancel): ")
 if start_sim == 'n':
-    reset_objects(epucks,[-1.2,1])
     delete_objects(obstacles)
     sys.exit()
 
@@ -810,7 +832,7 @@ for i in range(number_epucks):
 #%% Delete extra epucks
     
 #delete_epucks()
-reset_objects(epucks,[-1.2,1])
+#reset_objects(epucks,[-1.2,1])
 delete_objects(obstacles)
         
 plt.plot(ego_puck.forceMagList)
