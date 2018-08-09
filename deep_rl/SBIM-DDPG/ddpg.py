@@ -18,7 +18,7 @@ import timeit
 
 OU = OU()       #Ornstein-Uhlenbeck Process
 
-def playGame(train_indicator=0):    #1 means Train, 0 means simply Run
+def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
     BUFFER_SIZE = 100000
     BATCH_SIZE = 32
     GAMMA = 0.99
@@ -26,8 +26,8 @@ def playGame(train_indicator=0):    #1 means Train, 0 means simply Run
     LRA = 0.0001    #Learning rate for Actor
     LRC = 0.001     #Lerning rate for Critic
 
-    action_dim = 3  #Steering/Acceleration/Brake
-    state_dim = 29  #of sensors input
+    action_dim = 2  #Steering/Acceleration/Brake
+    state_dim = 64  #of sensors input
 
     np.random.seed(1337)
 
@@ -54,7 +54,7 @@ def playGame(train_indicator=0):    #1 means Train, 0 means simply Run
     buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
     # Generate a Torcs environment
-    # env = TorcsEnv(vision=vision, throttle=True,gear_change=False)
+    env = TorcsEnv(vision=vision, throttle=True,gear_change=False)
 
     #Now load the weight
     print("Now we load the weight")
@@ -71,11 +71,11 @@ def playGame(train_indicator=0):    #1 means Train, 0 means simply Run
     for i in range(episode_count):
 
         print("Episode : " + str(i) + " Replay Buffer " + str(buff.count()))
-#
-#        if np.mod(i, 3) == 0:
-#            ob = env.reset(relaunch=True)   #relaunch TORCS every 3 episode because of the memory leak error
-#        else:
-#            ob = env.reset()
+
+        if np.mod(i, 3) == 0:
+            ob = env.reset(relaunch=True)   #relaunch TORCS every 3 episode because of the memory leak error
+        else:
+            ob = env.reset()
 
         s_t = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY,  ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
      

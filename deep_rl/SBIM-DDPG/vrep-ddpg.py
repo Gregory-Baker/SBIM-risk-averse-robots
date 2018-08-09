@@ -97,6 +97,9 @@ class epuck:
             self.distance_to_wall = [0]*4
             self.velocity_towards_wall = [0]*4
             self.velocity = [0]*3
+            
+            self.cumulative_reward = 0
+
 #----------------------------------------------------------------------------
 # Setters
         
@@ -162,6 +165,12 @@ class epuck:
     def get_vel(self):
         
         returnCode, self.linearVelocity, self.angularVelocity = vrep.simxGetObjectVelocity(clientID, self.handle, vrep.simx_opmode_buffer)
+        
+    def get_all(self):
+        
+        self.get_pos()
+        self.get_ang()
+        self.get_vel()
         
 #----------------------------------------------------------------------------
 # Read Sensors      
@@ -297,6 +306,50 @@ class epuck:
         self.velocity[1] = self.linearVelocity[1]
         self.velocity[2] = self.angularVelocity[2]
         
+    def radar_observation(self):
+        
+        self.dist_ang_to_objects(epucks, obstacles)
+        self.dist_to_walls(map_points)
+        self.velocity_inputs()
+        self.nn_input = np.concatenate((self.scan_matrix.flatten(), np.array(self.distance_to_wall), np.array(self.velocity), [self.dist_to_target], [self.ang_to_target]))
+        
+        
+#-----------------------------------------------------------------------------
+# Reward Functions
+        
+    def calc_distance_reward(self,
+                             drop_off_exponent = 1):
+        
+        self.distance_reward = (1 - np.tanh(self.dist_to_target))**drop_off_exponent
+        
+    def calc_completion_reward(self,
+                               proximity_to_target = 0.05):
+        
+        if self.dist_to_target < proximity_to_target:
+            self.completion_reward = 20
+        else:
+            self.completion_reward = 0
+            
+    def calc_crash_reward(self):
+        
+        if 0.4 < self.forceMag < 100:
+            self.crash_reward = -10*self.forceMag
+        else:
+            self.crash_reward = 0
+        
+    def calc_step_reward(self,
+                          step_reward = -0.5):
+        
+        self.calc_completion_reward()
+        self.calc_crash_reward()
+        self.calc_distance_reward()
+        
+        self.total_reward = self.distance_reward + self.completion_reward + self.crash_reward + step_reward
+        
+    def calc_cumulative_reward(self):
+        
+        self.calc_step_reward()
+        self.cumulative_reward += self.total_reward
 
 #-----------------------------------------------------------------------------
 
@@ -310,53 +363,41 @@ class epuck:
                        proximity_to_target = 0.05):
 
         self.get_pos()
-        self.forceMagList = []
         
         target_np = np.array(target)
         position_np = np.array(self.position)      
         
-        dist_to_target = np.linalg.norm(target_np - position_np)
-        print(dist_to_target)
+        self.dist_to_target = np.linalg.norm(target_np - position_np)
+        self.read_force_sens()
 
-        while dist_to_target > proximity_to_target:
+        while (self.dist_to_target > proximity_to_target) and not (0.4 < self.forceMag < 100):
             
             _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
             if(sim_run == 0):
                 break
             
-            self.get_pos()
-            self.get_ang()
-            self.get_vel()
+            self.get_all()
+            self.read_force_sens()
             
-            dist_to_target, ang_to_target = self.dist_ang_to_target(target_np)
+            self.dist_to_target, self.ang_to_target = self.dist_ang_to_target(target_np)
             
             if laser_sens:
                 self.read_laser_sens()
                 
             if radar_sens:
-                self.dist_ang_to_objects(epucks, obstacles)
-                self.dist_to_walls(map_points)
-                self.velocity_inputs()
-                self.nn_input = np.concatenate((self.scan_matrix.flatten(), np.array(self.distance_to_wall), np.array(self.velocity), [dist_to_target], [ang_to_target]))
-
-
-            if force_sens:
-                self.read_force_sens()
-                if self.forceMag < 100:
-                    self.forceMagList.append(self.forceMag)
-                    if self.forceMag > 0.4:
-                        print(f'Force on Robot: {self.forceMag}')
+                self.radar_observation()
             
-            angular_velocity = 2*ang_to_target
+            self.calc_cumulative_reward()
 
+            angular_velocity = 2*self.ang_to_target
             self.set_vel(linear_velocity, angular_velocity)
                     
-            print(f'Distance to Target: {dist_to_target}')
+            print(f'Cumulative Reward: {self.cumulative_reward}')
             
             time.sleep(0.05)
         
-        if stop_at_target:
-            self.set_vel(0,0)
+        stop_sim()
+            
             
     def avoid_obstacles(self,
                         wheel_velocity):
@@ -547,6 +588,11 @@ def initialise_vrep(scene_name: 'str',
         
     return clientID
 
+
+def stop_sim():
+    
+    vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+
 #%%
     
 def calculate_positions(map_points: 'np.array of points',
@@ -711,7 +757,6 @@ while answer == 0:
         clientID = initialise_vrep(
                     'epuck_arena_multi_spawn', 19998, headless)
         
-        ego_puck = epuck(0, True)
         epucks = create_epucks(number_epucks, False)
         answer = 1
     elif start_vrep == 'n':
@@ -719,6 +764,8 @@ while answer == 0:
         answer = 1
     else:
         print("please type 'y' to start vrep or 'n' to use open vrep program\n")        
+
+ego_puck = epuck(0, True)
 
 
 #%% Size of arena (map)
@@ -833,12 +880,9 @@ for i in range(number_epucks):
     epucks[i].set_vel(0,0)
 
 
-#%% Delete extra epucks
+#%% Delete obstacles
     
-#delete_epucks()
-#reset_objects(epucks,[-1.2,1])
 delete_objects(obstacles)
-        
-plt.plot(ego_puck.forceMagList)
+
 
 
