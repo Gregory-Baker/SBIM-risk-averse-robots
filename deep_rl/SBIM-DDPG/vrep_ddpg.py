@@ -535,6 +535,22 @@ def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
     
     return obstacle_handle, obstacle_dimensions
 
+def create_obstacles(number_obstacles,
+                     default_position = [-1.2,0.5]):
+    
+    obstacles = []
+
+    for i in range(number_obstacles):
+        obs_type = np.random.randint(2)
+        obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
+        if obs_type == 0:
+            obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
+        else:
+            obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
+        obstacles[i].set_pos(default_position)
+        
+    return obstacles
+
 def create_dummy(dummy_size = 0.05,
                  colors = None):
     
@@ -547,6 +563,13 @@ def get_dummy_handle():
     _, dummyHandle = vrep.simxGetObjectHandle(clientID, 'Dummy', vrep.simx_opmode_blocking)
     
     return dummyHandle
+
+def place_dummy(position):
+    dummy_handle = get_dummy_handle()
+    if dummy_handle == 0:
+        dummy_handle = create_dummy()
+    target_dummy = dummy(dummy_handle,0.05)
+    target_dummy.set_pos(position)
                                      
 #%% Function to start VREP
 
@@ -586,6 +609,10 @@ def initialise_vrep(scene_name: 'str',
         
     return clientID
 
+
+def start_sim():
+    
+    vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
 
 def stop_sim():
     
@@ -733,155 +760,356 @@ def reset_objects(objects, position):
     for obj in objects:
         obj.set_pos(position)
         
-
-#%%--------------------------------------------------------------- 
-# Main script
+def reset_epucks(epucks,
+                 number_active_epucks,
+                 start_positions):
     
-number_epucks = 6
-    
-# Prompt user for vrep startup options    
-answer = 0
-while answer == 0:
-    
-    start_sim = False
-    start_vrep = input("Start a new vrep session, y/n? ")
-    if start_vrep == 'y':
-        # initialise vrep
-        headless = False        
-        headless_yn = input("Headless? y/n ")
-        if headless_yn == 'y':
-            headless = True
-                
-        clientID = initialise_vrep(
-                    'epuck_arena_multi_spawn', 19998, headless)
+    for robot in epucks:
+        x_pos = -1 -int(robot.i)/10
+        robot.set_pos([x_pos, 1])
+        robot.set_vel(0,0)
         
-        epucks = create_epucks(number_epucks, False)
-        answer = 1
-    elif start_vrep == 'n':
-        clientID = 0
-        answer = 1
-    else:
-        print("please type 'y' to start vrep or 'n' to use open vrep program\n")        
+    for i in range(number_active_epucks):
+        epucks[i].set_pos(start_positions[i,:])
+        epucks[i].set_ang(np.random.rand()*2*math.pi)
+        
+        
+#%% Main Script
+        
+#import random
+#import argparse
+#from keras.models import model_from_json, Model
+#from keras.models import Sequential
+#from keras.layers.core import Dense, Dropout, Activation, Flatten
+#from keras.optimizers import Adam
+#import tensorflow as tf
+#from keras.engine.training import collect_trainable_weights
+#import json
+#        
+#from ReplayBuffer import ReplayBuffer
+#from ActorNetwork import ActorNetwork
+#from CriticNetwork import CriticNetwork
+from OU import OU
+import timeit
 
-ego_puck = epuck(0, True)
+OU = OU()       #Ornstein-Uhlenbeck Process
 
+#def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
+BUFFER_SIZE = 100000
+BATCH_SIZE = 32
+GAMMA = 0.99
+TAU = 0.001     #Target Network HyperParameters
+LRA = 0.0001    #Learning rate for Actor
+LRC = 0.001     #Lerning rate for Critic
 
-#%% Size of arena (map)
-    
+action_dim = 2  #Steering/Acceleration/Brake
+state_dim = 64  #of sensors input
+
+np.random.seed(1337)
+
+EXPLORE = 100000.
+episode_count = 2000
+max_steps = 100000
+reward = 0
+done = False
+step = 0
+epsilon = 1
+indicator = 0
+
+clientID = 0
+open_vrep = False
+headless = False
+number_epucks = 6
+number_obstacles = 5
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
+#    #Tensorflow GPU optimization
+#    config = tf.ConfigProto()
+#    config.gpu_options.allow_growth = True
+#    sess = tf.Session(config=config)
+#    from keras import backend as K
+#    K.set_session(sess)
+#
+#    actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
+#    critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
+#    buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
+
+# Generate a Torcs environment
+if open_vrep:
+    clientID = initialise_vrep('epuck_arena_multi_spawn', 19998, headless)
+    epucks = create_epucks(number_epucks, False)
+    ego_puck = epuck(0, True)
+
+#    #Now load the weight
+#    print("Now we load the weight")
+#    try:
+#        actor.model.load_weights("actormodel.h5")
+#        critic.model.load_weights("criticmodel.h5")
+#        actor.target_model.load_weights("actormodel.h5")
+#        critic.target_model.load_weights("criticmodel.h5")
+#        print("Weight load successfully")
+#    except:
+#        print("Cannot find the weight")
+
+print("Experiment Start.")
+for i in range(episode_count):
+
+#        print("Episode : " + str(i) + " Replay Buffer " + str(buff.count()))
+    
+    obstacles = create_obstacles(number_obstacles)
+
+    number_active_epucks = np.random.randint(number_epucks+1)
+    number_active_obstacles = np.random.randint(number_obstacles+1)
+    
+    start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+    target_position = start_positions[len(start_positions)-1,:]
+
+    reset_epucks(epucks, number_active_epucks, start_positions)
+    place_dummy(target_position)
+    
+    radii = [0.05]*(number_epucks+2) 
+    for obs in obstacles:
+        radii.append(obs.radius)
+    
+
+    s_t = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY,  ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
+ 
+    total_reward = 0.
+    for j in range(max_steps):
+        loss = 0 
+        epsilon -= 1.0 / EXPLORE
+        a_t = np.zeros([1,action_dim])
+        noise_t = np.zeros([1,action_dim])
         
-#%% Create obstacles
+        a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.60, 0.30)
+        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.5 , 1.00, 0.10)
+        noise_t[0][2] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][2], -0.1 , 1.00, 0.05)
 
-number_obstacles = 5
-obstacles = []
+        #The following code do the stochastic brake
+        #if random.random() <= 0.1:
+        #    print("********Now we apply the brake***********")
+        #    noise_t[0][2] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][2],  0.2 , 1.00, 0.10)
 
-for i in range(number_obstacles):
-    obs_type = np.random.randint(2)
-    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
-    if obs_type == 0:
-        obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
-    else:
-        obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
-    obstacles[i].set_pos([-1.2,0.5])
+        a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
+        a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
+        a_t[0][2] = a_t_original[0][2] + noise_t[0][2]
 
-#%% Randomise ePuck starting positions
+        ob, r_t, done, info = env.step(a_t[0])
+
+        s_t1 = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY, ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
     
-# reset ePuck positions
-for robot in epucks:
-    x_pos = -1 -int(robot.i)/10
-    robot.set_pos([x_pos, 1])
+        buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
+        
+        #Do the batch update
+        batch = buff.getBatch(BATCH_SIZE)
+        states = np.asarray([e[0] for e in batch])
+        actions = np.asarray([e[1] for e in batch])
+        rewards = np.asarray([e[2] for e in batch])
+        new_states = np.asarray([e[3] for e in batch])
+        dones = np.asarray([e[4] for e in batch])
+        y_t = np.asarray([e[1] for e in batch])
 
-# Minimum initial spacing between robots (m)
-epuck_min_spacing = 0.2
+        target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
+       
+        for k in range(len(batch)):
+            if dones[k]:
+                y_t[k] = rewards[k]
+            else:
+                y_t[k] = rewards[k] + GAMMA*target_q_values[k]
+   
+        if (train_indicator):
+            loss += critic.model.train_on_batch([states,actions], y_t) 
+            a_for_grad = actor.model.predict(states)
+            grads = critic.gradients(states, a_for_grad)
+            actor.train(states, grads)
+            actor.target_train()
+            critic.target_train()
 
-# array of robot and obstacle radii, used to avoid placing obstacles on top of robots
-radii = [0.05]
+        total_reward += r_t
+        s_t = s_t1
+    
+        print("Episode", i, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
+    
+        step += 1
+        if done:
+            break
 
-# number of epucks in arena
-number_active_epucks = np.random.randint(number_epucks+1)
-print(f'Number of active ePucks: {number_active_epucks}')
+    if np.mod(i, 3) == 0:
+        if (train_indicator):
+            print("Now we save model")
+            actor.model.save_weights("actormodel.h5", overwrite=True)
+            with open("actormodel.json", "w") as outfile:
+                json.dump(actor.model.to_json(), outfile)
 
-# Randomised starting position with minimum spacing and buffer dist from arena walls
-start_positions = calculate_positions(map_points, number_active_epucks+2, epuck_min_spacing)
-target_position = start_positions[len(start_positions)-1,:]
+            critic.model.save_weights("criticmodel.h5", overwrite=True)
+            with open("criticmodel.json", "w") as outfile:
+                json.dump(critic.model.to_json(), outfile)
 
-# Move dummy to highlight target position
-target_dummy = dummy(get_dummy_handle(),0.05)
-target_dummy.set_pos(target_position)
+    print("TOTAL REWARD @ " + str(i) +"-th Episode  : Reward " + str(total_reward))
+    print("Total Step: " + str(step))
+    print("")
 
-# Set epuck starting parameters
-for robot in epucks:
-    robot.set_vel(0,0)
-    radii.append(0.05)
+env.end()  # This is for shutting down TORCS
+print("Finish.")
 
-for i in range(number_active_epucks):
-    epucks[i].set_pos(start_positions[i,:])
-    epucks[i].set_ang(np.random.rand()*2*math.pi)
-
-# number of obstacles in arena
-number_active_obstacles = np.random.randint(number_obstacles+1)
-print(f'Number of obstacles: {number_active_obstacles}')
-
-# Caluclate positions for obstacles that dont impact robot positions
-for obs in obstacles:
-    radii.append(obs.radius)
-
-for i in range(number_active_obstacles):
-    obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
-    obstacles[i].set_pos(obstacles[i].position)
-    obstacles[i].set_ang(np.random.rand()*2*math.pi)
+#if __name__ == "__main__":
+#    playGame()
+        
     
 
-# Set ego_puck starting parameters
-ego_puck.set_vel(0,0)
-ego_puck.set_pos(start_positions[number_active_epucks,:])
-ego_puck.set_ang(np.random.rand()*2*math.pi)
+##%%--------------------------------------------------------------- 
+## Main script
+#    
+#number_epucks = 6
+#    
+## Prompt user for vrep startup options    
+#answer = 0
+#while answer == 0:
+#    
+#    start_sim = False
+#    start_vrep = input("Start a new vrep session, y/n? ")
+#    if start_vrep == 'y':
+#        # initialise vrep
+#        headless = False        
+#        headless_yn = input("Headless? y/n ")
+#        if headless_yn == 'y':
+#            headless = True
+#                
+#        clientID = initialise_vrep('epuck_arena_multi_spawn', 19998, headless)
+#        
+#        epucks = create_epucks(number_epucks, False)
+#        answer = 1
+#    elif start_vrep == 'n':
+#        clientID = 0
+#        answer = 1
+#    else:
+#        print("please type 'y' to start vrep or 'n' to use open vrep program\n")        
+#
+#ego_puck = epuck(0, True)
+#
+#
+##%% Size of arena (map)
+#    
+#map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
+#
+#        
+##%% Create obstacles
+#
+#number_obstacles = 5
+#obstacles = []
+#
+#for i in range(number_obstacles):
+#    obs_type = np.random.randint(2)
+#    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
+#    if obs_type == 0:
+#        obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
+#    else:
+#        obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
+#    obstacles[i].set_pos([-1.2,0.5])
 
-# Set up arrays for NN input parameters recorded by ego_puck
-ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
-ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
-ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
-ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
-ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
-    
-#%%
+##%% Randomise ePuck starting positions
+#    
+## reset ePuck positions
+#for robot in epucks:
+#    x_pos = -1 -int(robot.i)/10
+#    robot.set_pos([x_pos, 1])
+#
+## Minimum initial spacing between robots (m)
+#epuck_min_spacing = 0.2
 
-start_sim = input("Start the simulation, press Enter (or n to cancel): ")
-if start_sim == 'n':
-    delete_objects(obstacles)
-    sys.exit()
+## array of robot and obstacle radii, used to avoid placing obstacles on top of robots
+#radii = [0.05]
+#
+## number of epucks in arena
+#number_active_epucks = np.random.randint(number_epucks+1)
+#print('Number of active ePucks: ' + str(number_active_epucks))
+#
+## Randomised starting position with minimum spacing and buffer dist from arena walls
+#start_positions = calculate_positions(map_points, number_active_epucks+2, epuck_min_spacing)
+#target_position = start_positions[len(start_positions)-1,:]
+#
+## Move dummy to highlight target position
+#dummy_handle = get_dummy_handle()
+#if dummy_handle == 0:
+#    dummy_handle = create_dummy()
+#target_dummy = dummy(dummy_handle,0.05)
+#target_dummy.set_pos(target_position)
 
-returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+## Set epuck starting parameters
+#for robot in epucks:
+#    robot.set_vel(0,0)
+#    radii.append(0.05)
+#
+#for i in range(number_active_epucks):
+#    epucks[i].set_pos(start_positions[i,:])
+#    epucks[i].set_ang(np.random.rand()*2*math.pi)
 
-time.sleep(1)
+## number of obstacles in arena
+#number_active_obstacles = np.random.randint(number_obstacles+1)
+#print(f'Number of obstacles: {number_active_obstacles}')
 
-t = [None]*(number_epucks+1)
+## Caluclate positions for obstacles that dont impact robot positions
+#for obs in obstacles:
+#    radii.append(obs.radius)
+        
+# HEEEREEEEEEEEEEEEEEEEE
 
-stop_event = threading.Event()
-
-for i in range(number_active_epucks):
-    #robot_velocity = np.absolute(np.random.normal(0.1,0.02))
-    robot_velocity = np.random.gumbel(0.1,0.02)
-    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
-    
-    t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
-    
-t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (target_position,0.15,True,True,False,True))
-
-for i in range(number_active_epucks+1):
-    t[i].start()
-
-for i in range(number_active_epucks+1):
-    t[i].join()
-
-for i in range(number_epucks):
-    epucks[i].set_vel(0,0)
-
-
-#%% Delete obstacles
-    
-delete_objects(obstacles)
+#for i in range(number_active_obstacles):
+#    obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
+#    obstacles[i].set_pos(obstacles[i].position)
+#    obstacles[i].set_ang(np.random.rand()*2*math.pi)
+#    
+#
+## Set ego_puck starting parameters
+#ego_puck.set_vel(0,0)
+#ego_puck.set_pos(start_positions[number_active_epucks,:])
+#ego_puck.set_ang(np.random.rand()*2*math.pi)
+#
+## Set up arrays for NN input parameters recorded by ego_puck
+#ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
+#ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
+#ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
+#ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
+#ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
+#    
+##%%
+#
+#start_sim = input("Start the simulation, press Enter (or n to cancel): ")
+#if start_sim == 'n':
+#    delete_objects(obstacles)
+#    sys.exit()
+#
+#returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+#
+#time.sleep(1)
+#
+#t = [None]*(number_epucks+1)
+#
+#stop_event = threading.Event()
+#
+#for i in range(number_active_epucks):
+#    #robot_velocity = np.absolute(np.random.normal(0.1,0.02))
+#    robot_velocity = np.random.gumbel(0.1,0.02)
+#    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
+#    
+#    t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+#    
+#t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (target_position,0.15,True,True,False,True))
+#
+#for i in range(number_active_epucks+1):
+#    t[i].start()
+#
+#for i in range(number_active_epucks+1):
+#    t[i].join()
+#
+#for i in range(number_epucks):
+#    epucks[i].set_vel(0,0)
+#
+#
+##%% Delete obstacles
+#    
+#delete_objects(obstacles)
 
 
 

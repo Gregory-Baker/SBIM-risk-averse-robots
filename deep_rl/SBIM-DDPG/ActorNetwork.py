@@ -48,10 +48,9 @@ class ActorNetwork(object):
         S = Input(shape=[state_size])   
         h0 = Dense(HIDDEN1_UNITS, activation='relu')(S)
         h1 = Dense(HIDDEN2_UNITS, activation='relu')(h0)
-        Steering = Dense(1,activation='tanh',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)  
-        Acceleration = Dense(1,activation='sigmoid',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)   
-        Brake = Dense(1,activation='sigmoid',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1) 
-        V = merge([Steering,Acceleration,Brake],mode='concat')          
+        Angular_Velocity = Dense(1,activation='tanh',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)  
+        Linear_Velocity = Dense(1,activation='tanh',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)
+        V = merge([Angular_Velocity,Linear_Velocity],mode='concat')          
         model = Model(input=S,output=V)
         return model, model.trainable_weights, S
 

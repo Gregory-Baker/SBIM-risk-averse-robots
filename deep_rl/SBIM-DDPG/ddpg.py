@@ -15,6 +15,7 @@ from ActorNetwork import ActorNetwork
 from CriticNetwork import CriticNetwork
 from OU import OU
 import timeit
+import vrep_ddpg as vd
 
 OU = OU()       #Ornstein-Uhlenbeck Process
 
@@ -41,6 +42,12 @@ def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
     step = 0
     epsilon = 1
     indicator = 0
+    
+    clientID = 0
+    headless = False
+    number_epucks = 6
+    number_obstacles = 5
+    map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
     #Tensorflow GPU optimization
     config = tf.ConfigProto()
@@ -54,8 +61,10 @@ def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
     buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
     # Generate a Torcs environment
-    env = TorcsEnv(vision=vision, throttle=True,gear_change=False)
-
+    clientID = vd.initialise_vrep('epuck_arena_multi_spawn', 19998, headless)
+    epucks = vd.create_epucks(number_epucks, False)
+    ego_puck = vd.epuck(0, True)
+    
     #Now load the weight
     print("Now we load the weight")
     try:
@@ -71,11 +80,22 @@ def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
     for i in range(episode_count):
 
         print("Episode : " + str(i) + " Replay Buffer " + str(buff.count()))
+        
+        obstacles = vd.create_obstacles(number_obstacles)
+    
+        number_active_epucks = np.random.randint(number_epucks+1)
+        number_active_obstacles = np.random.randint(number_obstacles+1)
+        
+        start_positions = vd.calculate_positions(map_points, number_active_epucks+2, 0.2)
+        target_position = start_positions[len(start_positions)-1,:]
 
-        if np.mod(i, 3) == 0:
-            ob = env.reset(relaunch=True)   #relaunch TORCS every 3 episode because of the memory leak error
-        else:
-            ob = env.reset()
+        vd.reset_epucks(epucks, number_active_epucks, start_positions)
+        vd.place_dummy(target_position)
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
+        
 
         s_t = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY,  ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
      
