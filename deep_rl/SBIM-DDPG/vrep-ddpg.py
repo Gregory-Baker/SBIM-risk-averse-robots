@@ -858,8 +858,6 @@ time.sleep(1)
 
 t = [None]*(number_epucks+1)
 
-stop_event = threading.Event()
-
 for i in range(number_active_epucks):
     #robot_velocity = np.absolute(np.random.normal(0.1,0.02))
     robot_velocity = np.random.gumbel(0.1,0.02)

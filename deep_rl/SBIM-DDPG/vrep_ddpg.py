@@ -306,11 +306,17 @@ class epuck:
         
     def radar_observation(self):
         
+        self.dist_to_target, self.ang_to_target = self.dist_ang_to_target(self.target_position)
         self.dist_ang_to_objects(epucks, obstacles)
         self.dist_to_walls(map_points)
         self.velocity_inputs()
         self.nn_input = np.concatenate((self.scan_matrix.flatten(), np.array(self.distance_to_wall), np.array(self.velocity), [self.dist_to_target], [self.ang_to_target]))
         
+    def sensor_sweep(self):
+        
+        self.get_all()
+        self.read_force_sens()
+        self.radar_observation()
         
 #-----------------------------------------------------------------------------
 # Reward Functions
@@ -390,11 +396,44 @@ class epuck:
             angular_velocity = 2*self.ang_to_target
             self.set_vel(linear_velocity, angular_velocity)
                     
-            print(f'Cumulative Reward: {self.cumulative_reward}')
+#            print(f'Cumulative Reward: {self.cumulative_reward}')
             
             time.sleep(0.05)
         
         stop_sim()
+        
+    def step(self,
+             action: '[[angular_velocity, linear_velocity]]',
+             proximity_to_target = 0.05,
+             step_penalty = -0.5):
+        
+        done = False
+        
+        _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+        if(sim_run == 0):
+            done = True
+            
+        self.set_vel(action[0][1], action[0][0])
+        
+        self.sensor_sweep()
+        
+        self.calculate_distance_reward()
+        
+        if 0.4 < self.forceMag < 100:
+            self.crash_reward = -20*self.forceMag
+            done = True
+        else:
+            self.crash_reward = 0
+        
+        if self.dist_to_target < proximity_to_target:
+            self.completion_reward = 20
+            done = True
+        else:
+            self.completion_reward = 0
+        
+        self.step_reward = self.distance_reward + self.completion_reward + self.crash_reward + step_penalty
+        
+        return done
             
             
     def avoid_obstacles(self,
@@ -773,28 +812,59 @@ def reset_epucks(epucks,
         epucks[i].set_pos(start_positions[i,:])
         epucks[i].set_ang(np.random.rand()*2*math.pi)
         
+def reset_obstacles(obstacles,
+                    number_active_obstacles,
+                    start_positions,
+                    map_points,
+                    radii):
+    
+    for i in range(number_active_obstacles):
+        obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
+        obstacles[i].set_pos(obstacles[i].position)
+        obstacles[i].set_ang(np.random.rand()*2*math.pi)
+        
+def reset_ego_puck(ego_puck,
+                   start_positions,
+                   number_epucks,
+                   number_obstacles,
+                   number_active_epucks):
+    
+    # Set ego_puck starting parameters
+    ego_puck.set_vel(0,0)
+    ego_puck.set_pos(start_positions[number_active_epucks,:])
+    ego_puck.set_ang(np.random.rand()*2*math.pi)
+    
+    # Set up arrays for NN input parameters recorded by ego_puck
+    ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
+    ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
+    ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
+    ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
+    ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
+        
         
 #%% Main Script
         
-#import random
-#import argparse
-#from keras.models import model_from_json, Model
-#from keras.models import Sequential
-#from keras.layers.core import Dense, Dropout, Activation, Flatten
-#from keras.optimizers import Adam
-#import tensorflow as tf
-#from keras.engine.training import collect_trainable_weights
-#import json
-#        
-#from ReplayBuffer import ReplayBuffer
-#from ActorNetwork import ActorNetwork
-#from CriticNetwork import CriticNetwork
+import random
+import argparse
+from keras.models import model_from_json, Model
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation, Flatten
+from keras.optimizers import Adam
+import tensorflow as tf
+from keras.engine.training import collect_trainable_weights
+import json
+        
+from ReplayBuffer import ReplayBuffer
+from ActorNetwork import ActorNetwork
+from CriticNetwork import CriticNetwork
+    
 from OU import OU
 import timeit
 
 OU = OU()       #Ornstein-Uhlenbeck Process
 
 #def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
+train_indicator = 1
 BUFFER_SIZE = 100000
 BATCH_SIZE = 32
 GAMMA = 0.99
@@ -802,10 +872,10 @@ TAU = 0.001     #Target Network HyperParameters
 LRA = 0.0001    #Learning rate for Actor
 LRC = 0.001     #Lerning rate for Critic
 
-action_dim = 2  #Steering/Acceleration/Brake
+action_dim = 2  # Angluar_Velocity| Linear_Velocity
 state_dim = 64  #of sensors input
 
-np.random.seed(1337)
+#np.random.seed(1337)
 
 EXPLORE = 100000.
 episode_count = 2000
@@ -817,22 +887,22 @@ epsilon = 1
 indicator = 0
 
 clientID = 0
-open_vrep = False
+open_vrep = True
 headless = False
 number_epucks = 6
 number_obstacles = 5
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
-#    #Tensorflow GPU optimization
-#    config = tf.ConfigProto()
-#    config.gpu_options.allow_growth = True
-#    sess = tf.Session(config=config)
-#    from keras import backend as K
-#    K.set_session(sess)
-#
-#    actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
-#    critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
-#    buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
+#Tensorflow GPU optimization
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+sess = tf.Session(config=config)
+from keras import backend as K
+K.set_session(sess)
+
+actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
+critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
+buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
 # Generate a Torcs environment
 if open_vrep:
@@ -850,6 +920,8 @@ if open_vrep:
 #        print("Weight load successfully")
 #    except:
 #        print("Cannot find the weight")
+    
+    
 
 print("Experiment Start.")
 for i in range(episode_count):
@@ -863,6 +935,7 @@ for i in range(episode_count):
     
     start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
     target_position = start_positions[len(start_positions)-1,:]
+    ego_puck.target_position = target_position
 
     reset_epucks(epucks, number_active_epucks, start_positions)
     place_dummy(target_position)
@@ -870,9 +943,32 @@ for i in range(episode_count):
     radii = [0.05]*(number_epucks+2) 
     for obs in obstacles:
         radii.append(obs.radius)
+        
+    reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
     
+    reset_ego_puck(ego_puck, start_positions, number_epucks, number_obstacles, number_active_epucks)
+    
+    t = [None]*(number_active_epucks)
 
-    s_t = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY,  ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
+    start_sim()
+    
+    time.sleep(1)
+    
+    for i in range(number_active_epucks):
+        robot_velocity = np.random.gumbel(0.1,0.02)
+        t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+        
+    for i in range(number_active_epucks):
+        t[i].start()
+        
+    ego_puck.sensor_sweep()
+    
+    s_t = ego_puck.nn_input
+
+#    stop_sim()
+#    
+#    delete_objects(obstacles)
+#    sys.exit()
  
     total_reward = 0.
     for j in range(max_steps):
@@ -882,22 +978,15 @@ for i in range(episode_count):
         noise_t = np.zeros([1,action_dim])
         
         a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
-        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.60, 0.30)
-        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.5 , 1.00, 0.10)
-        noise_t[0][2] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][2], -0.1 , 1.00, 0.05)
-
-        #The following code do the stochastic brake
-        #if random.random() <= 0.1:
-        #    print("********Now we apply the brake***********")
-        #    noise_t[0][2] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][2],  0.2 , 1.00, 0.10)
+        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 1.00, 0.5)
+        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 1.00, 0.05)
 
         a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
         a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
-        a_t[0][2] = a_t_original[0][2] + noise_t[0][2]
 
-        ob, r_t, done, info = env.step(a_t[0])
-
-        s_t1 = np.hstack((ob.angle, ob.track, ob.trackPos, ob.speedX, ob.speedY, ob.speedZ, ob.wheelSpinVel/100.0, ob.rpm))
+        done = ego_puck.step(a_t[0])
+        s_t1 = ego_puck.nn_input
+        r_t = ego_puck.step_reward
     
         buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
         
@@ -933,9 +1022,11 @@ for i in range(episode_count):
     
         step += 1
         if done:
+            stop_sim()
+            delete_objects(obstacles)
             break
 
-    if np.mod(i, 3) == 0:
+    if np.mod(i, 10) == 0:
         if (train_indicator):
             print("Now we save model")
             actor.model.save_weights("actormodel.h5", overwrite=True)
@@ -950,7 +1041,6 @@ for i in range(episode_count):
     print("Total Step: " + str(step))
     print("")
 
-env.end()  # This is for shutting down TORCS
 print("Finish.")
 
 #if __name__ == "__main__":
