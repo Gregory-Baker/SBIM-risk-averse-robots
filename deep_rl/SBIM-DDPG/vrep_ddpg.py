@@ -102,7 +102,7 @@ class epuck:
 # Setters
         
     def set_pos(self, 
-                position: '[x y] metres'):
+                position):
         
         self.position = position
         
@@ -115,7 +115,7 @@ class epuck:
         vrep.simxSetObjectPosition(clientID, self.handle, -1, position, vrep.simx_opmode_oneshot)
 
     def set_ang(self, 
-                angle: 'rad'):
+                angle):
         
         # Convert angle to euler angle
         eulerAngles = [0, 0, angle]
@@ -124,8 +124,8 @@ class epuck:
         vrep.simxSetObjectOrientation(clientID, self.handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
     
     def set_vel(self, 
-                linear_velocity: 'm/s', 
-                angular_velocity: 'rad/sec'):
+                linear_velocity, 
+                angular_velocity):
         
         # Convert to wheel velocities
         vel_r = linear_velocity + self.wheel_sep*angular_velocity/2
@@ -223,9 +223,8 @@ class epuck:
         return distance_to_target, angle_to_target
     
     def relative_velocity(self,
-                          v_object: 'linear velocity of other object',
-                          angle: 'angle to other object in coordinate system of ego_bot'
-                          ):
+                          v_object,
+                          angle):
         
         # translate to world coordinate frame
         alpha = self.angle + angle 
@@ -237,8 +236,8 @@ class epuck:
         
     
     def dist_ang_to_objects(self,
-                            epucks: 'array containing other ePuck objects',
-                            obstacles: 'array of obstacles'):
+                            epucks,
+                            obstacles):
         
         i = 0
         
@@ -289,7 +288,7 @@ class epuck:
     
     
     def dist_to_walls(self,
-                      map_points: 'works on square maps only'):
+                      map_points):
         
         arena_dims = [max(map_points[:,0]), max(map_points[:,1])]
         
@@ -358,9 +357,9 @@ class epuck:
 #-----------------------------------------------------------------------------
 
     def move_to_target(self, 
-                       target: '[x y] metres', 
-                       linear_velocity: 'm/s',
-                       stop_at_target: 'bool',
+                       target, 
+                       linear_velocity,
+                       stop_at_target,
                        force_sens = False,
                        laser_sens = False,
                        radar_sens = False,
@@ -403,7 +402,7 @@ class epuck:
         stop_sim()
         
     def step(self,
-             action: '[[angular_velocity, linear_velocity]]',
+             action,
              proximity_to_target = 0.05,
              step_penalty = -0.5):
         
@@ -466,7 +465,7 @@ class epuck:
         
         
     def random_walk(self,
-                    linear_velocity: 'm/s',
+                    linear_velocity,
                     angular_velocity_std_dev = 0.1,
                     epsilon_straight = 0.02):
         
@@ -505,7 +504,7 @@ class obstacle:
         
         
     def set_pos(self, 
-            position: '[x y] metres'):
+            position):
         
         self.position = position
     
@@ -518,7 +517,7 @@ class obstacle:
         vrep.simxSetObjectPosition(clientID, self.handle, -1, position, vrep.simx_opmode_oneshot)
         
     def set_ang(self, 
-        angle: 'rad'):
+                angle):
         
         # Convert angle to euler angle
         eulerAngles = [0, 0, angle]
@@ -554,7 +553,7 @@ class dummy (obstacle):
 
 #%%
         
-def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
+def create_obstacle(obstacle_type_int,
                     mean = 0.18,
                     std_dev = 0.05):
     
@@ -612,9 +611,9 @@ def place_dummy(position):
                                      
 #%% Function to start VREP
 
-def initialise_vrep(scene_name: 'str', 
-                    vrep_port: 'int', 
-                    headless: 'bool'):
+def initialise_vrep(scene_name, 
+                    vrep_port, 
+                    headless):
     
     # Defines path to VREP folder
     path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
@@ -629,10 +628,7 @@ def initialise_vrep(scene_name: 'str',
     vrep.simxFinish(-1) 
     
     # Command-line call to initialise vrep
-    Popen(["nice", "-n", "-20", f"{path_to_vrep}/vrep.sh", head_call, '', '',
-           f"-gREMOTEAPISERVERSERVICE_{vrep_port}_FALSE_FALSE", 
-           f"{path_to_scenes}/{scene_name}.ttt"], 
-            stdout=PIPE, stderr=PIPE)
+    Popen(["nice", "-n", "-20", "/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux/vrep.sh", head_call, '', '', "-gREMOTEAPISERVERSERVICE_19998_FALSE_FALSE", "../../vrep_scenes/test_scenes/epuck_arena_multi_spawn.ttt"], stdout=PIPE, stderr=PIPE)
     
     # Allow vrep to boot before initialising comms
     time.sleep(5)
@@ -659,9 +655,9 @@ def stop_sim():
 
 #%%
     
-def calculate_positions(map_points: 'np.array of points',
-                number_of_points: 'number of points to be calculated',
-                min_spacing: 'minimum euc distance between points'):
+def calculate_positions(map_points,
+                        number_of_points,
+                        min_spacing):
 
     map_buffer = buffer_map(map_points, min_spacing)
     
@@ -693,10 +689,10 @@ def calculate_positions(map_points: 'np.array of points',
     return positions
 
 
-def extra_position(map_points: 'np.array of points',
-                 positions: 'positions',
-                 radii: 'array of radii of existing objects',
-                 radius: 'radius of new object'):
+def extra_position(map_points,
+                   positions,
+                   radii,
+                   radius):
     
     map_buffer = buffer_map(map_points, radius)
     
@@ -734,7 +730,7 @@ def delete_objects(object_array):
         vrep.simxRemoveObject(clientID, obj.handle, vrep.simx_opmode_oneshot)
         
         
-def buffer_map(map_points: 'n x 2 numpy array',
+def buffer_map(map_points,
                buffer = 0.1):
     
     map_buffer = map_points.flatten()
@@ -749,7 +745,7 @@ def buffer_map(map_points: 'n x 2 numpy array',
     
     return map_buffer
 
-def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
+def clone_sensor(sensor_handle,
                  turn_angle):
     
     _, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [sensor_handle], vrep.simx_opmode_blocking)
@@ -765,9 +761,9 @@ def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
     return new_sensor_handle
 
 
-def create_sensor_array(sensor_name: 'name of sensor to be cloned',
-                        number_sensors: 'number to be added',
-                        angle_between_sensors: 'deg'):
+def create_sensor_array(sensor_name,
+                        number_sensors,
+                        angle_between_sensors):
     
     _, sensor_handle = vrep.simxGetObjectHandle(clientID, sensor_name, vrep.simx_opmode_blocking)
 
@@ -851,7 +847,7 @@ from keras.models import Sequential
 from keras.layers.core import Dense, Dropout, Activation, Flatten
 from keras.optimizers import Adam
 import tensorflow as tf
-from keras.engine.training import collect_trainable_weights
+#from keras.engine.training import collect_trainable_weights
 import json
         
 from ReplayBuffer import ReplayBuffer

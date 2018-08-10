@@ -1,10 +1,10 @@
 import numpy as np
 import math
-from keras.initializations import normal, identity
+from keras.initializers import normal, identity, VarianceScaling
 from keras.models import model_from_json
 from keras.models import Sequential, Model
-from keras.engine.training import collect_trainable_weights
-from keras.layers import Dense, Flatten, Input, merge, Lambda
+# from keras.engine.training import collect_trainable_weights
+from keras.layers import Dense, Flatten, Input, concatenate, Lambda
 from keras.optimizers import Adam
 import tensorflow as tf
 import keras.backend as K
@@ -48,9 +48,9 @@ class ActorNetwork(object):
         S = Input(shape=[state_size])   
         h0 = Dense(HIDDEN1_UNITS, activation='relu')(S)
         h1 = Dense(HIDDEN2_UNITS, activation='relu')(h0)
-        Angular_Velocity = Dense(1,activation='tanh',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)  
-        Linear_Velocity = Dense(1,activation='tanh',init=lambda shape, name: normal(shape, scale=1e-4, name=name))(h1)
-        V = merge([Angular_Velocity,Linear_Velocity],mode='concat')          
+        Angular_Velocity = Dense(1,activation='tanh',init=lambda shape:VarianceScaling(scale=1e-4)(shape))(h1)
+        Linear_Velocity = Dense(1,activation='sigmoid',init=lambda shape:VarianceScaling(scale=1e-4)(shape))(h1) 
+        V = concatenate([Angular_Velocity,Linear_Velocity])          
         model = Model(input=S,output=V)
         return model, model.trainable_weights, S
 
