@@ -325,6 +325,15 @@ class epuck:
         
         self.distance_reward = (1 - np.tanh(self.dist_to_target))**drop_off_exponent
         
+    def calc_distance_reward_delta(self):
+        
+        self.distance_reward_prev = self.distance_reward
+        
+        self.calc_distance_reward()
+        
+        self.distance_reward_delta = self.distance_reward - self.distance_reward_prev
+        
+        
     def calc_completion_reward(self,
                                proximity_to_target = 0.05):
         
@@ -403,7 +412,8 @@ class epuck:
         
     def step(self,
              action,
-             proximity_to_target = 0.05,
+             step_time = 0,
+             proximity_to_target = 0.1,
              step_penalty = -0.5):
         
         done = False
@@ -412,25 +422,29 @@ class epuck:
         if(sim_run == 0):
             done = True
             
-        self.set_vel(action[0][1], action[0][0])
+        self.set_vel(action[1], action[0])
+        
+        time.sleep(step_time)
         
         self.sensor_sweep()
         
-        self.calculate_distance_reward()
+        self.calc_distance_reward_delta()
         
         if 0.4 < self.forceMag < 100:
-            self.crash_reward = -20*self.forceMag
+            self.crash_reward = -100*self.forceMag
             done = True
         else:
             self.crash_reward = 0
         
         if self.dist_to_target < proximity_to_target:
-            self.completion_reward = 20
+            self.completion_reward = 200
             done = True
         else:
             self.completion_reward = 0
         
-        self.step_reward = self.distance_reward + self.completion_reward + self.crash_reward + step_penalty
+        print(self.distance_reward_delta)
+        
+        self.step_reward = self.distance_reward_delta*100 + self.completion_reward + self.crash_reward + step_penalty
         
         return done
             
@@ -528,7 +542,7 @@ class obstacle:
 class cuboid (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.width = dimensions[0]
         self.depth = dimensions[1]
         self.height = dimensions[2]
@@ -539,7 +553,7 @@ class cuboid (obstacle):
 class cylinder (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.radius = dimensions[0]
         self.height = dimensions[2]
         self.type = 1
@@ -547,7 +561,7 @@ class cylinder (obstacle):
 class dummy (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.height = dimensions
         
 
@@ -616,8 +630,8 @@ def initialise_vrep(scene_name,
                     headless):
     
     # Defines path to VREP folder
-    path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
-    path_to_scenes = '../../vrep_scenes/test_scenes'
+#    path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
+#    path_to_scenes = '../../vrep_scenes/test_scenes'
     
     # Converts vrep initialisation settings to arguments recognised by vrep
     head_call = ''
@@ -798,12 +812,7 @@ def reset_objects(objects, position):
 def reset_epucks(epucks,
                  number_active_epucks,
                  start_positions):
-    
-    for robot in epucks:
-        x_pos = -1 -int(robot.i)/10
-        robot.set_pos([x_pos, 1])
-        robot.set_vel(0,0)
-        
+          
     for i in range(number_active_epucks):
         epucks[i].set_pos(start_positions[i,:])
         epucks[i].set_ang(np.random.rand()*2*math.pi)
@@ -813,6 +822,8 @@ def reset_obstacles(obstacles,
                     start_positions,
                     map_points,
                     radii):
+    
+    reset_objects(obstacles, [-1.2, 0.5])
     
     for i in range(number_active_obstacles):
         obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
@@ -829,6 +840,7 @@ def reset_ego_puck(ego_puck,
     ego_puck.set_vel(0,0)
     ego_puck.set_pos(start_positions[number_active_epucks,:])
     ego_puck.set_ang(np.random.rand()*2*math.pi)
+    ego_puck.distance_reward = 0
     
     # Set up arrays for NN input parameters recorded by ego_puck
     ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
@@ -873,9 +885,9 @@ state_dim = 64  #of sensors input
 
 #np.random.seed(1337)
 
-EXPLORE = 100000.
+EXPLORE = 200000.
 episode_count = 2000
-max_steps = 100000
+max_steps = 5000
 reward = 0
 done = False
 step = 0
@@ -884,6 +896,7 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
+load_weights = False
 headless = False
 number_epucks = 6
 number_obstacles = 5
@@ -905,26 +918,26 @@ if open_vrep:
     clientID = initialise_vrep('epuck_arena_multi_spawn', 19998, headless)
     epucks = create_epucks(number_epucks, False)
     ego_puck = epuck(0, True)
+    obstacles = create_obstacles(number_obstacles)
 
-#    #Now load the weight
-#    print("Now we load the weight")
-#    try:
-#        actor.model.load_weights("actormodel.h5")
-#        critic.model.load_weights("criticmodel.h5")
-#        actor.target_model.load_weights("actormodel.h5")
-#        critic.target_model.load_weights("criticmodel.h5")
-#        print("Weight load successfully")
-#    except:
-#        print("Cannot find the weight")
-    
-    
+    if load_weights:
+        #Now load the weight
+        print("Now we load the weight")
+        try:
+            actor.model.load_weights("actormodel.h5")
+            critic.model.load_weights("criticmodel.h5")
+            actor.target_model.load_weights("actormodel.h5")
+            critic.target_model.load_weights("criticmodel.h5")
+            print("Weight load successfully")
+        except:
+            print("Cannot find the weight")
 
 print("Experiment Start.")
-for i in range(episode_count):
-
-#        print("Episode : " + str(i) + " Replay Buffer " + str(buff.count()))
+for ep in range(episode_count):
     
-    obstacles = create_obstacles(number_obstacles)
+    time.sleep(2)
+
+    print("Episode : " + str(ep) + " Replay Buffer " + str(buff.count()))
 
     number_active_epucks = np.random.randint(number_epucks+1)
     number_active_obstacles = np.random.randint(number_obstacles+1)
@@ -932,6 +945,11 @@ for i in range(episode_count):
     start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
     target_position = start_positions[len(start_positions)-1,:]
     ego_puck.target_position = target_position
+    
+    for robot in epucks:
+        x_pos = -1.0-float(robot.i)/10
+        robot.set_pos([x_pos, 1])
+        robot.set_vel(0,0)
 
     reset_epucks(epucks, number_active_epucks, start_positions)
     place_dummy(target_position)
@@ -960,11 +978,6 @@ for i in range(episode_count):
     ego_puck.sensor_sweep()
     
     s_t = ego_puck.nn_input
-
-#    stop_sim()
-#    
-#    delete_objects(obstacles)
-#    sys.exit()
  
     total_reward = 0.
     for j in range(max_steps):
@@ -974,13 +987,13 @@ for i in range(episode_count):
         noise_t = np.zeros([1,action_dim])
         
         a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
-        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 1.00, 0.5)
+        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.50, 2.0)
         noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 1.00, 0.05)
 
         a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
         a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
 
-        done = ego_puck.step(a_t[0])
+        done = ego_puck.step(a_t[0], 0.1)
         s_t1 = ego_puck.nn_input
         r_t = ego_puck.step_reward
     
@@ -1014,15 +1027,20 @@ for i in range(episode_count):
         total_reward += r_t
         s_t = s_t1
     
-        print("Episode", i, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
+        print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
     
         step += 1
         if done:
             stop_sim()
-            delete_objects(obstacles)
+            break
+        
+        if loss == np.inf:
+            stop_sim()
+            print('Disappearing ePuck error. Exiting....')
+            sys.exit()
             break
 
-    if np.mod(i, 10) == 0:
+    if np.mod(ep, 10) == 0:
         if (train_indicator):
             print("Now we save model")
             actor.model.save_weights("actormodel.h5", overwrite=True)
@@ -1033,169 +1051,13 @@ for i in range(episode_count):
             with open("criticmodel.json", "w") as outfile:
                 json.dump(critic.model.to_json(), outfile)
 
-    print("TOTAL REWARD @ " + str(i) +"-th Episode  : Reward " + str(total_reward))
+    print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
     print("Total Step: " + str(step))
     print("")
 
 print("Finish.")
 
-#if __name__ == "__main__":
-#    playGame()
-        
-    
 
-##%%--------------------------------------------------------------- 
-## Main script
-#    
-#number_epucks = 6
-#    
-## Prompt user for vrep startup options    
-#answer = 0
-#while answer == 0:
-#    
-#    start_sim = False
-#    start_vrep = input("Start a new vrep session, y/n? ")
-#    if start_vrep == 'y':
-#        # initialise vrep
-#        headless = False        
-#        headless_yn = input("Headless? y/n ")
-#        if headless_yn == 'y':
-#            headless = True
-#                
-#        clientID = initialise_vrep('epuck_arena_multi_spawn', 19998, headless)
-#        
-#        epucks = create_epucks(number_epucks, False)
-#        answer = 1
-#    elif start_vrep == 'n':
-#        clientID = 0
-#        answer = 1
-#    else:
-#        print("please type 'y' to start vrep or 'n' to use open vrep program\n")        
-#
-#ego_puck = epuck(0, True)
-#
-#
-##%% Size of arena (map)
-#    
-#map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
-#
-#        
-##%% Create obstacles
-#
-#number_obstacles = 5
-#obstacles = []
-#
-#for i in range(number_obstacles):
-#    obs_type = np.random.randint(2)
-#    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
-#    if obs_type == 0:
-#        obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
-#    else:
-#        obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
-#    obstacles[i].set_pos([-1.2,0.5])
-
-##%% Randomise ePuck starting positions
-#    
-## reset ePuck positions
-#for robot in epucks:
-#    x_pos = -1 -int(robot.i)/10
-#    robot.set_pos([x_pos, 1])
-#
-## Minimum initial spacing between robots (m)
-#epuck_min_spacing = 0.2
-
-## array of robot and obstacle radii, used to avoid placing obstacles on top of robots
-#radii = [0.05]
-#
-## number of epucks in arena
-#number_active_epucks = np.random.randint(number_epucks+1)
-#print('Number of active ePucks: ' + str(number_active_epucks))
-#
-## Randomised starting position with minimum spacing and buffer dist from arena walls
-#start_positions = calculate_positions(map_points, number_active_epucks+2, epuck_min_spacing)
-#target_position = start_positions[len(start_positions)-1,:]
-#
-## Move dummy to highlight target position
-#dummy_handle = get_dummy_handle()
-#if dummy_handle == 0:
-#    dummy_handle = create_dummy()
-#target_dummy = dummy(dummy_handle,0.05)
-#target_dummy.set_pos(target_position)
-
-## Set epuck starting parameters
-#for robot in epucks:
-#    robot.set_vel(0,0)
-#    radii.append(0.05)
-#
-#for i in range(number_active_epucks):
-#    epucks[i].set_pos(start_positions[i,:])
-#    epucks[i].set_ang(np.random.rand()*2*math.pi)
-
-## number of obstacles in arena
-#number_active_obstacles = np.random.randint(number_obstacles+1)
-#print(f'Number of obstacles: {number_active_obstacles}')
-
-## Caluclate positions for obstacles that dont impact robot positions
-#for obs in obstacles:
-#    radii.append(obs.radius)
-        
-# HEEEREEEEEEEEEEEEEEEEE
-
-#for i in range(number_active_obstacles):
-#    obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
-#    obstacles[i].set_pos(obstacles[i].position)
-#    obstacles[i].set_ang(np.random.rand()*2*math.pi)
-#    
-#
-## Set ego_puck starting parameters
-#ego_puck.set_vel(0,0)
-#ego_puck.set_pos(start_positions[number_active_epucks,:])
-#ego_puck.set_ang(np.random.rand()*2*math.pi)
-#
-## Set up arrays for NN input parameters recorded by ego_puck
-#ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
-#ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
-#ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
-#ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
-#ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
-#    
-##%%
-#
-#start_sim = input("Start the simulation, press Enter (or n to cancel): ")
-#if start_sim == 'n':
-#    delete_objects(obstacles)
-#    sys.exit()
-#
-#returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
-#
-#time.sleep(1)
-#
-#t = [None]*(number_epucks+1)
-#
-#stop_event = threading.Event()
-#
-#for i in range(number_active_epucks):
-#    #robot_velocity = np.absolute(np.random.normal(0.1,0.02))
-#    robot_velocity = np.random.gumbel(0.1,0.02)
-#    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
-#    
-#    t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
-#    
-#t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (target_position,0.15,True,True,False,True))
-#
-#for i in range(number_active_epucks+1):
-#    t[i].start()
-#
-#for i in range(number_active_epucks+1):
-#    t[i].join()
-#
-#for i in range(number_epucks):
-#    epucks[i].set_vel(0,0)
-#
-#
-##%% Delete obstacles
-#    
-#delete_objects(obstacles)
 
 
 
