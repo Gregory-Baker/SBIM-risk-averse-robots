@@ -414,7 +414,7 @@ class epuck:
              action,
              step_time = 0,
              proximity_to_target = 0.1,
-             step_penalty = -0.5):
+             step_penalty = -0.3):
         
         done = False
         
@@ -422,7 +422,7 @@ class epuck:
         if(sim_run == 0):
             done = True
             
-        self.set_vel(action[1], action[0])
+        self.set_vel(0.6*action[1], 2*action[0])
         
         time.sleep(step_time)
         
@@ -939,7 +939,7 @@ for ep in range(episode_count):
 
     print("Episode : " + str(ep) + " Replay Buffer " + str(buff.count()))
 
-    number_active_epucks = np.random.randint(number_epucks+1)
+    number_active_epucks = 0 #np.random.randint(number_epucks+1)
     number_active_obstacles = np.random.randint(number_obstacles+1)
     
     start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
@@ -987,13 +987,13 @@ for ep in range(episode_count):
         noise_t = np.zeros([1,action_dim])
         
         a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
-        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.50, 2.0)
-        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 1.00, 0.05)
+        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.20, 1.0)
+        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 0.60, 0.1)
 
         a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
         a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
 
-        done = ego_puck.step(a_t[0], 0.1)
+        done = ego_puck.step(a_t[0], 0.2)
         s_t1 = ego_puck.nn_input
         r_t = ego_puck.step_reward
     
