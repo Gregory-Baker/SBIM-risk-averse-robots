@@ -325,11 +325,12 @@ class epuck:
         
         self.distance_reward = (1 - np.tanh(self.dist_to_target))**drop_off_exponent
         
-    def calc_distance_reward_delta(self):
+    def calc_distance_reward_delta(self,
+                                   drop_off_exponent = 1):
         
         self.distance_reward_prev = self.distance_reward
         
-        self.calc_distance_reward()
+        self.calc_distance_reward(drop_off_exponent)
         
         self.distance_reward_delta = self.distance_reward - self.distance_reward_prev
         
@@ -428,7 +429,7 @@ class epuck:
         
         self.sensor_sweep()
         
-        self.calc_distance_reward_delta()
+        self.calc_distance_reward_delta(0.5)
         
         if 0.4 < self.forceMag < 100:
             self.crash_reward = -100*self.forceMag
@@ -614,12 +615,14 @@ def get_dummy_handle():
     
     _, dummyHandle = vrep.simxGetObjectHandle(clientID, 'Dummy', vrep.simx_opmode_blocking)
     
+    if dummyHandle == 0:
+        dummyHandle = create_dummy()
+    
     return dummyHandle
 
 def place_dummy(position):
+    
     dummy_handle = get_dummy_handle()
-    if dummy_handle == 0:
-        dummy_handle = create_dummy()
     target_dummy = dummy(dummy_handle,0.05)
     target_dummy.set_pos(position)
                                      
@@ -919,6 +922,7 @@ if open_vrep:
     epucks = create_epucks(number_epucks, False)
     ego_puck = epuck(0, True)
     obstacles = create_obstacles(number_obstacles)
+    
 
     if load_weights:
         #Now load the weight
