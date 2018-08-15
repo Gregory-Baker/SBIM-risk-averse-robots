@@ -424,8 +424,8 @@ class epuck:
         step_time_milli = step_time*1000
         
         while cmd_time_diff < step_time_milli:
-            self.get_ang()
-            cmd_time = vrep.simxGetLastCmdTime(clientID)
+            self.get_vel()
+            cmd_time = vrep.simxGetLastCmdTime(0)
             cmd_time_diff = cmd_time - cmd_time_start
         
         self.sensor_sweep(objects)
@@ -891,15 +891,28 @@ episode_count = 10000
 max_steps = 5000
 reward = 0
 done = False
-step = 0
 epsilon = 1
 indicator = 0
 
 clientID = 0
 open_vrep = True
 vrep_port = 19998
-load_weights = False
+load_weights = True
+ckpt_folder = 'weight_archive'
+ckpt_date = '2018-08-15'
+ckpt_ep = 1150
+ckpt_step = 56809
+ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 headless = False
+
+if load_weights:
+    step = ckpt_step
+    ep = ckpt_ep+1
+else:
+    step = 0
+    ckpt_ep = 0
+    ep = 1
+
 number_epucks = 0
 number_obstacles = 11
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
@@ -918,168 +931,171 @@ actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
 critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
 buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
-# Generate a Torcs environment
-if open_vrep:
-    initialise_vrep(vrep_port, headless)
-    #epucks = create_epucks(number_epucks, False)
-    
-clientID = setup_vrep_comms(vrep_port)
+while ep < episode_count:
 
-ego_puck = epuck(0, True)
-obstacles = create_obstacles(number_obstacles)
-dummy_handle = get_dummy_handle()
-target_dummy = dummy(dummy_handle,0.05)
-
-
-
-
-if load_weights:
-    #Now load the weight
-    print("Now we load the weight")
-    try:
-        actor.model.load_weights("actormodel.h5")
-        critic.model.load_weights("criticmodel.h5")
-        actor.target_model.load_weights("actormodel.h5")
-        critic.target_model.load_weights("criticmodel.h5")
-        print("Weight load successfully")
-    except:
-        print("Cannot find the weight")
-
-print("Experiment Start.")
-for ep in range(episode_count):
-    
-    time.sleep(2)
-
-    print("Episode : " + str(ep) + " Replay Buffer " + str(buff.count()))
-
-    number_active_epucks = np.random.randint(number_epucks+1)
-    number_active_obstacles = np.random.randint(number_obstacles+1)
-    
-    start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
-    target_position = start_positions[len(start_positions)-1,:]
-    
-#    for robot in epucks:
-#        x_pos = -1.0-float(robot.i)/10
-#        robot.set_pos([x_pos, 1])
-#        robot.set_vel(0,0)
-
-    #reset_epucks(epucks, number_active_epucks, start_positions)
-    target_dummy.set_pos(target_position)
-    
-    radii = [0.05]*(number_epucks+2) 
-    for obs in obstacles:
-        radii.append(obs.radius)
+    # Generate a Torcs environment
+    if open_vrep:
+        initialise_vrep(vrep_port, headless)
+        #epucks = create_epucks(number_epucks, False)
         
-    reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+    clientID = setup_vrep_comms(vrep_port)
     
-    reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+    ego_puck = epuck(0, True)
+    obstacles = create_obstacles(number_obstacles)
+    dummy_handle = get_dummy_handle()
+    target_dummy = dummy(dummy_handle,0.05)
     
-#    t = [None]*(number_active_epucks)
-
-    start_sim()
+    if load_weights:
+        #Now load the weight
+        print("Now we load the weight")
+        try:
+            actor.model.load_weights(ckpt_path + "actormodel.h5")
+            critic.model.load_weights(ckpt_path + "criticmodel.h5")
+            actor.target_model.load_weights(ckpt_path + "actormodel.h5")
+            critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
+            print("Weight load successfully")
+        except:
+            print("Cannot find the weight")
     
-    time.sleep(1)
-    
-#    for i in range(number_active_epucks):
-#        robot_velocity = np.random.gumbel(0.1,0.02)
-#        t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+    print("Experiment Start.")
+    while ep in range(ckpt_ep+1, ckpt_ep+401):
         
-#    for i in range(number_active_epucks):
-#        t[i].start()
-        
-    ego_puck.sensor_sweep(obstacles)
-    ego_puck.calc_distance_reward(0.5)
+        time.sleep(2)
     
-    s_t = ego_puck.nn_input
- 
-    total_reward = 0.
-    for j in range(max_steps):
-        loss = 0 
-        epsilon -= 1.0 / EXPLORE
-        a_t = np.zeros([1,action_dim])
-        noise_t = np.zeros([1,action_dim])
-        
-        a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
-        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.7, 0.3)
-        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 1.0, 0.03)
-
-        a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
-        a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
-
-        done = ego_puck.step(a_t[0], obstacles, 0.2)
-        s_t1 = ego_puck.nn_input
-        r_t = ego_puck.step_reward
+        print("Episode : " + str(ep) + " Replay Buffer " + str(buff.count()))
     
-        buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
+        number_active_epucks = np.random.randint(number_epucks+1)
+        number_active_obstacles = np.random.randint(number_obstacles+1)
         
-        #Do the batch update
-        batch = buff.getBatch(BATCH_SIZE)
-        states = np.asarray([e[0] for e in batch])
-        actions = np.asarray([e[1] for e in batch])
-        rewards = np.asarray([e[2] for e in batch])
-        new_states = np.asarray([e[3] for e in batch])
-        dones = np.asarray([e[4] for e in batch])
-        y_t = np.asarray([e[1] for e in batch])
-
-        target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
-       
-        for k in range(len(batch)):
-            if dones[k]:
-                y_t[k] = rewards[k]
-            else:
-                y_t[k] = rewards[k] + GAMMA*target_q_values[k]
-   
-        if (train_indicator):
-            loss += critic.model.train_on_batch([states,actions], y_t) 
-            a_for_grad = actor.model.predict(states)
-            grads = critic.gradients(states, a_for_grad)
-            actor.train(states, grads)
-            actor.target_train()
-            critic.target_train()
-
-        total_reward += r_t
-        s_t = s_t1
-    
-        print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
-        print("")
-    
-        step += 1
-        if done:
-            stop_sim()
-            break
+        start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+        target_position = start_positions[len(start_positions)-1,:]
         
-        if loss == np.inf:
-            stop_sim()
-            print('Disappearing ePuck error. Exiting....')
-            sys.exit()
-            break
-
-    if np.mod(ep, 10) == 0:
-        if (train_indicator):
-            print("Now we save model")
-            actor.model.save_weights("actormodel.h5", overwrite=True)
-            with open("actormodel.json", "w") as outfile:
-                json.dump(actor.model.to_json(), outfile)
-
-            critic.model.save_weights("criticmodel.h5", overwrite=True)
-            with open("criticmodel.json", "w") as outfile:
-                json.dump(critic.model.to_json(), outfile)
-                
-    if np.mod(ep, 50) == 0 and ep !=0:
-        if (train_indicator):
-            print("Creating model checkpoint")
-            date = datetime.date.today()
-            ckpt_folder_name = 'weight_archive/'+ str(date) + '/' + str(vrep_port) + '/' + str(ep)
-            os.makedirs(ckpt_folder_name)
-            copyfile('actormodel.h5', ckpt_folder_name + '/actormodel.h5')
-            copyfile('actormodel.json', ckpt_folder_name + '/actormodel.json')
-            copyfile('criticmodel.h5', ckpt_folder_name + '/criticmodel.h5')
-            copyfile('criticmodel.json', ckpt_folder_name + '/criticmodel.json')
+    #    for robot in epucks:
+    #        x_pos = -1.0-float(robot.i)/10
+    #        robot.set_pos([x_pos, 1])
+    #        robot.set_vel(0,0)
+    
+        #reset_epucks(epucks, number_active_epucks, start_positions)
+        target_dummy.set_pos(target_position)
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
             
-
-    print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
-    print("Total Step: " + str(step))
-    print("")
+        reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+        
+        reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+        
+    #    t = [None]*(number_active_epucks)
+    
+        start_sim()
+        
+        time.sleep(1)
+        
+    #    for i in range(number_active_epucks):
+    #        robot_velocity = np.random.gumbel(0.1,0.02)
+    #        t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+            
+    #    for i in range(number_active_epucks):
+    #        t[i].start()
+            
+        ego_puck.sensor_sweep(obstacles)
+        ego_puck.calc_distance_reward(0.5)
+        
+        s_t = ego_puck.nn_input
+     
+        total_reward = 0.
+        for j in range(max_steps):
+            loss = 0 
+            epsilon -= 1.0 / EXPLORE
+            a_t = np.zeros([1,action_dim])
+            noise_t = np.zeros([1,action_dim])
+            
+            a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+            noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  0.0 , 0.7, 0.5)
+            noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  0.15 , 1.0, 0.03)
+    
+            a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
+            a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
+    
+            done = ego_puck.step(a_t[0], obstacles, 0.2)
+            s_t1 = ego_puck.nn_input
+            r_t = ego_puck.step_reward
+        
+            buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
+            
+            #Do the batch update
+            batch = buff.getBatch(BATCH_SIZE)
+            states = np.asarray([e[0] for e in batch])
+            actions = np.asarray([e[1] for e in batch])
+            rewards = np.asarray([e[2] for e in batch])
+            new_states = np.asarray([e[3] for e in batch])
+            dones = np.asarray([e[4] for e in batch])
+            y_t = np.asarray([e[1] for e in batch])
+    
+            target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
+           
+            for k in range(len(batch)):
+                if dones[k]:
+                    y_t[k] = rewards[k]
+                else:
+                    y_t[k] = rewards[k] + GAMMA*target_q_values[k]
+       
+            if (train_indicator):
+                loss += critic.model.train_on_batch([states,actions], y_t) 
+                a_for_grad = actor.model.predict(states)
+                grads = critic.gradients(states, a_for_grad)
+                actor.train(states, grads)
+                actor.target_train()
+                critic.target_train()
+    
+            total_reward += r_t
+            s_t = s_t1
+        
+            print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
+            print("")
+        
+            step += 1
+            if done:
+                stop_sim()
+                break
+            
+            if loss == np.inf:
+                stop_sim()
+                print('Disappearing ePuck error. Exiting....')
+                sys.exit()
+                break
+    
+        if np.mod(ep, 10) == 0:
+            if (train_indicator):
+                print("Now we save model")
+                actor.model.save_weights("actormodel.h5", overwrite=True)
+                with open("actormodel.json", "w") as outfile:
+                    json.dump(actor.model.to_json(), outfile)
+    
+                critic.model.save_weights("criticmodel.h5", overwrite=True)
+                with open("criticmodel.json", "w") as outfile:
+                    json.dump(critic.model.to_json(), outfile)
+                    
+        if np.mod(ep, 50) == 0 and ep !=0:
+            if (train_indicator):
+                print("Creating model checkpoint")
+                date = datetime.date.today()
+                ckpt_folder_name = 'weight_archive/'+ str(date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step)
+                os.makedirs(ckpt_folder_name)
+                copyfile('actormodel.h5', ckpt_folder_name + '/actormodel.h5')
+                copyfile('actormodel.json', ckpt_folder_name + '/actormodel.json')
+                copyfile('criticmodel.h5', ckpt_folder_name + '/criticmodel.h5')
+                copyfile('criticmodel.json', ckpt_folder_name + '/criticmodel.json')
+                
+    
+        print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
+        print("Total Step: " + str(step))
+        print("")
+        
+        ep+=1
+        
+    vrep.simxCloseScene(clientID, vrep.simx_opmode_blocking)
 
 print("Finish.")
 
