@@ -869,7 +869,7 @@ import timeit
 OU = OU()       #Ornstein-Uhlenbeck Process
 
 #def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
-train_indicator = 1
+train_indicator = 0
 BUFFER_SIZE = 100000
 BATCH_SIZE = 32
 GAMMA = 0.99
@@ -893,7 +893,7 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
-load_weights = False
+load_weights = True
 headless = False
 number_epucks = 0
 number_obstacles = 11
