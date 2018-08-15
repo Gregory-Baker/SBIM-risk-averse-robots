@@ -835,6 +835,7 @@ def reset_obstacles(obstacles,
         
 def reset_ego_puck(ego_puck,
                    start_positions,
+                   target_position,
                    number_epucks,
                    number_obstacles,
                    number_active_epucks):
@@ -843,7 +844,10 @@ def reset_ego_puck(ego_puck,
     ego_puck.set_vel(0,0)
     ego_puck.set_pos(start_positions[number_active_epucks,:])
     ego_puck.set_ang(np.random.rand()*2*math.pi)
-    ego_puck.distance_reward = 0
+    ego_puck.target_position = target_position
+    ego_puck.dist_to_target, _ = ego_puck.dist_ang_to_target(ego_puck.target_position)
+    ego_puck.distance_reward = ego_puck.calc_distance_reward()
+    print(ego_puck.distance_reward)
     
     # Set up arrays for NN input parameters recorded by ego_puck
     ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
@@ -888,8 +892,8 @@ state_dim = 64  #of sensors input
 
 #np.random.seed(1337)
 
-EXPLORE = 200000.
-episode_count = 2000
+EXPLORE = 100000.
+episode_count = 5000
 max_steps = 5000
 reward = 0
 done = False
@@ -900,6 +904,9 @@ indicator = 0
 clientID = 0
 open_vrep = True
 load_weights = True
+ckpt_folder = 'weight_archive/'
+ckpt_date = '2018-08-15/'
+ckpt_ep = '1000/'
 headless = False
 number_epucks = 6
 number_obstacles = 5
@@ -928,10 +935,10 @@ if open_vrep:
         #Now load the weight
         print("Now we load the weight")
         try:
-            actor.model.load_weights("actormodel.h5")
-            critic.model.load_weights("criticmodel.h5")
-            actor.target_model.load_weights("actormodel.h5")
-            critic.target_model.load_weights("criticmodel.h5")
+            actor.model.load_weights(ckpt_folder + ckpt_date + ckpt_ep + "actormodel.h5")
+            critic.model.load_weights(ckpt_folder + ckpt_date + ckpt_ep + "criticmodel.h5")
+            actor.target_model.load_weights(ckpt_folder + ckpt_date + ckpt_ep + "actormodel.h5")
+            critic.target_model.load_weights(ckpt_folder + ckpt_date + ckpt_ep + "criticmodel.h5")
             print("Weight load successfully")
         except:
             print("Cannot find the weight")
@@ -948,7 +955,6 @@ for ep in range(episode_count):
     
     start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
     target_position = start_positions[len(start_positions)-1,:]
-    ego_puck.target_position = target_position
     
     for robot in epucks:
         x_pos = -1.0-float(robot.i)/10
@@ -964,7 +970,7 @@ for ep in range(episode_count):
         
     reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
     
-    reset_ego_puck(ego_puck, start_positions, number_epucks, number_obstacles, number_active_epucks)
+    reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
     
     t = [None]*(number_active_epucks)
 
