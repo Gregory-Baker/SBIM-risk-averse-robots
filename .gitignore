@@ -99,3 +99,7 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# keras files
+*.h5
+*.json
