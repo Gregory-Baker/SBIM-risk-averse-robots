@@ -100,5 +100,11 @@ ENV/
 # mypy
 .mypy_cache/
 
+<<<<<<< HEAD
 # keras weights
 *.h5
+=======
+# keras files
+*.h5
+*.json
+>>>>>>> 354c06f0c64c9e4f1657713618828d43acb1a161
