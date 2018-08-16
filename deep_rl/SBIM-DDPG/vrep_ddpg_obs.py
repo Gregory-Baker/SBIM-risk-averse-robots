@@ -19,6 +19,7 @@ import threading
 from shutil import copyfile
 import os
 import datetime
+import pickle
 # import matplotlib.pyplot as plt
 
 #%% MIsc parameters
@@ -311,18 +312,43 @@ class epuck:
 # Reward Functions
         
     def calc_distance_reward(self,
-                             drop_off_exponent = 1):
+                     dist_to_target,
+                     drop_off_exponent = 1):
         
-        self.distance_reward = (1 - np.tanh(self.dist_to_target))**drop_off_exponent
+        distance_reward = (1 - np.tanh(dist_to_target))**drop_off_exponent
+        
+        return distance_reward
         
     def calc_distance_reward_delta(self,
+                                   dist_to_target,
                                    drop_off_exponent = 1):
         
         self.distance_reward_prev = self.distance_reward
         
-        self.calc_distance_reward(drop_off_exponent)
+        self.distance_reward = self.calc_distance_reward(dist_to_target, drop_off_exponent)
         
         self.distance_reward_delta = self.distance_reward - self.distance_reward_prev
+        
+    def calc_distance_to_objects_reward(self,
+                                        drop_off_exponent = 1):
+        
+        distance_to_object_reward = [0]*len(self.scan_dist)
+        
+        for i in range(len(self.scan_dist)):
+            
+            if not (self.scan_dist[i] == 0):
+                distance_to_object_reward[i] = -np.cos(self.scan_ang[i]) * self.calc_distance_reward((self.scan_dist[i]-self.object_radii[i]), drop_off_exponent)
+                    
+        self.distance_to_objects_reward = min(distance_to_object_reward)
+                    
+    def calc_distance_to_objects_delta(self,
+                                       drop_off_exponent = 1):
+    
+        self.distance_to_objects_reward_prev = self.distance_to_objects_reward
+        
+        self.calc_distance_to_objects_reward(drop_off_exponent)
+        
+        self.distance_to_objects_reward_delta = self.distance_to_objects_reward - self.distance_to_objects_reward_prev
         
         
     def calc_completion_reward(self,
@@ -345,7 +371,7 @@ class epuck:
         
         self.calc_completion_reward()
         self.calc_crash_reward()
-        self.calc_distance_reward()
+        self.calc_distance_reward(self.dist_to_target)
         
         self.total_reward = self.distance_reward + self.completion_reward + self.crash_reward + step_reward
         
@@ -406,7 +432,7 @@ class epuck:
              objects,
              step_time = 0,
              proximity_to_target = 0.1,
-             step_penalty = -0.5):
+             step_penalty = -1):
         
         done = False
         
@@ -432,6 +458,7 @@ class epuck:
         self.sensor_sweep(objects)
         
         self.calc_distance_reward_delta(0.5)
+        self.calc_distance_to_objects_delta(3)
         
         if 0.4 < self.forceMag < 100:
             print('easy cowboy')
@@ -447,7 +474,7 @@ class epuck:
         else:
             self.completion_reward = 0
         
-        self.step_reward = self.distance_reward_delta*100 + self.completion_reward + self.crash_reward + step_penalty
+        self.step_reward = self.distance_reward_delta*100 + self.distance_to_objects_reward_delta*5 + self.completion_reward + self.crash_reward + step_penalty
         
         return done
             
@@ -646,7 +673,7 @@ def initialise_vrep(#scene_name,
     vrep.simxFinish(-1) 
     
     # Command-line call to initialise vrep
-    Popen(["nice", "-n", "-20", path_to_vrep, head_call, '', '', "-gREMOTEAPISERVERSERVICE_" + str(vrep_port) + "_FALSE_FALSE", "../../vrep_scenes/test_scenes/epuck_arena_multi_spawn_obs.ttt"], stdout=PIPE, stderr=PIPE)
+    Popen(["nice", "-n", "-20", path_to_vrep, head_call, '', '', "-gREMOTEAPISERVERSERVICE_" + str(vrep_port) + "_FALSE_FALSE", "../../vrep_scenes/test_scenes/epuck_arena_multi_spawn_obs_copy.ttt"], stdout=PIPE, stderr=PIPE)
     
     # Allow vrep to boot before initialising comms
     time.sleep(5)
@@ -895,7 +922,7 @@ LRC = 0.001     #Lerning rate for Critic
 
 #np.random.seed(1337)
 
-EXPLORE = 100000.
+EXPLORE = 200000.
 episode_count = 10000
 max_steps = 5000
 reward = 0
@@ -905,12 +932,12 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
-vrep_port = 19998
+vrep_port = 19999
 load_weights = False
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-08-16'
-ckpt_ep = 1150
-ckpt_step = 56809
+ckpt_ep = 400
+ckpt_step = 45710
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 headless = True
 
@@ -941,6 +968,9 @@ critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
 buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
 while ep < episode_count:
+    
+    if epsilon <= 0:
+        epsilon = 1.0
 
     # Generate a Torcs environment
     if open_vrep:
@@ -951,7 +981,7 @@ while ep < episode_count:
     
     ego_puck = epuck(0, True)
     obstacles = create_obstacles(number_obstacles)
-    dummy_handle = get_dummy_handle()
+    dummy_handle = get_dummy_handle()    
     target_dummy = dummy(dummy_handle,0.05)
     
     if load_weights:
@@ -962,16 +992,19 @@ while ep < episode_count:
             critic.model.load_weights(ckpt_path + "criticmodel.h5")
             actor.target_model.load_weights(ckpt_path + "actormodel.h5")
             critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
+            pickle_off = open(ckpt_path + "buff.pickle","rb")
+            buff = pickle.load(pickle_off)
             print("Weight load successfully")
         except:
             print("Cannot find the weight")
     
     print("Experiment Start.")
-    while ep in range(ckpt_ep+1, ckpt_ep+401):
+    ckpt_ep_set = ckpt_ep
+    while (ep < ckpt_ep_set+201):
         
         time.sleep(2)
     
-        print("Episode : " + str(ep) + " Replay Buffer " + str(buff.count()))
+        print("Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
     
         number_active_epucks = np.random.randint(number_epucks+1)
         number_active_obstacles = np.random.randint(number_obstacles+1)
@@ -1009,7 +1042,8 @@ while ep < episode_count:
     #        t[i].start()
             
         ego_puck.sensor_sweep(obstacles)
-        ego_puck.calc_distance_reward(0.5)
+        ego_puck.distance_reward = ego_puck.calc_distance_reward(0.5)
+        ego_puck.calc_distance_to_objects_reward(3)
         
         s_t = ego_puck.nn_input
      
@@ -1099,6 +1133,10 @@ while ep < episode_count:
                 copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
                 copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
                 
+                pickling_on = open("buff.pickle","wb")
+                pickle.dump(buff, pickling_on)
+                pickling_on.close()
+                copyfile('buff.pickle', ckpt_path + 'buff.pickle')
     
         print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
         print("Total Step: " + str(step))
@@ -1106,6 +1144,7 @@ while ep < episode_count:
         
         ep+=1
     
+    print('Quiting VREP')
     load_weights = True
     quit_vrep()
     time.sleep(15)
