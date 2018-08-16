@@ -412,6 +412,7 @@ class epuck:
         
         _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
         if(sim_run == 0):
+            print('sim no runsies')
             done = True
             
         self.set_vel(0.6*action[1], 2*action[0])
@@ -424,7 +425,7 @@ class epuck:
         step_time_milli = step_time*1000
         
         while cmd_time_diff < step_time_milli:
-            self.get_vel()
+            self.get_ang()
             cmd_time = vrep.simxGetLastCmdTime(0)
             cmd_time_diff = cmd_time - cmd_time_start
         
@@ -433,12 +434,14 @@ class epuck:
         self.calc_distance_reward_delta(0.5)
         
         if 0.4 < self.forceMag < 100:
+            print('easy cowboy')
             self.crash_reward = -200*self.forceMag
             done = True
         else:
             self.crash_reward = 0
         
         if self.dist_to_target < proximity_to_target:
+            print('target acquired')
             self.completion_reward = 200
             done = True
         else:
@@ -669,6 +672,12 @@ def start_sim():
 def stop_sim():
     
     vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+    
+def quit_vrep():
+    
+    res, _, _, _, _ = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'quitVrep', [], [], [], emptyBuff, vrep.simx_opmode_blocking)
+    
+    return res
 
 #%%
     
@@ -897,13 +906,13 @@ indicator = 0
 clientID = 0
 open_vrep = True
 vrep_port = 19998
-load_weights = True
+load_weights = False
 ckpt_folder = 'weight_archive'
-ckpt_date = '2018-08-15'
+ckpt_date = '2018-08-16'
 ckpt_ep = 1150
 ckpt_step = 56809
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
-headless = False
+headless = True
 
 if load_weights:
     step = ckpt_step
@@ -990,7 +999,7 @@ while ep < episode_count:
     
         start_sim()
         
-        time.sleep(1)
+        time.sleep(0.5)
         
     #    for i in range(number_active_epucks):
     #        robot_velocity = np.random.gumbel(0.1,0.02)
@@ -1081,12 +1090,14 @@ while ep < episode_count:
             if (train_indicator):
                 print("Creating model checkpoint")
                 date = datetime.date.today()
-                ckpt_folder_name = 'weight_archive/'+ str(date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step)
-                os.makedirs(ckpt_folder_name)
-                copyfile('actormodel.h5', ckpt_folder_name + '/actormodel.h5')
-                copyfile('actormodel.json', ckpt_folder_name + '/actormodel.json')
-                copyfile('criticmodel.h5', ckpt_folder_name + '/criticmodel.h5')
-                copyfile('criticmodel.json', ckpt_folder_name + '/criticmodel.json')
+                ckpt_ep = ep
+                ckpt_step = step
+                ckpt_path = 'weight_archive/'+ str(date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
+                os.makedirs(ckpt_path)
+                copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
+                copyfile('actormodel.json', ckpt_path + 'actormodel.json')
+                copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
+                copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
                 
     
         print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
@@ -1094,8 +1105,10 @@ while ep < episode_count:
         print("")
         
         ep+=1
-        
-    vrep.simxCloseScene(clientID, vrep.simx_opmode_blocking)
+    
+    load_weights = True
+    quit_vrep()
+    time.sleep(15)
 
 print("Finish.")
 
