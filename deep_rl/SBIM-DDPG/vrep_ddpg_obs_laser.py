@@ -308,6 +308,12 @@ class epuck:
         self.read_force_sens()
         self.radar_observation(objects)
         
+    def laser_sensor_sweep(self):
+        self.get_all()
+        self.read_force_sens()
+        self.read_laser_sens()
+        self.nn_input = self.laserDist
+        
 #-----------------------------------------------------------------------------
 # Reward Functions
         
@@ -430,20 +436,21 @@ class epuck:
     def step(self,
              action,
              objects,
+             time_step,
              step_time = 0,
-             proximity_to_target = 0.1,
-             step_penalty = -1):
+             laser_sens = False,
+             proximity_to_target = 0.1):
         
         done = False
+        
+        step_penalty = -0.01*time_step
         
         _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
         if(sim_run == 0):
             print('sim no runsies')
             done = True
             
-        self.set_vel(0.6*action[1], 2*action[0])
-        
-        #time.sleep(step_time)
+        self.set_vel(0.4*action[1], 1.5*action[0])
         
         cmd_time_start = vrep.simxGetLastCmdTime(clientID)
         
@@ -456,6 +463,11 @@ class epuck:
             cmd_time_diff = cmd_time - cmd_time_start
         
         self.sensor_sweep(objects)
+        
+        if laser_sens:
+            self.laser_sensor_sweep()
+            
+        self.nn_input = np.concatenate((self.nn_input, [j/max_steps]))
         
         self.calc_distance_reward_delta(0.5)
         self.calc_distance_to_objects_delta(3)
@@ -888,6 +900,95 @@ def reset_ego_puck(ego_puck,
     ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
     ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
     ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
+    
+    
+def validation_run(number_validation_episodes):
+    
+    max_steps = 200
+    
+    ep_success = []
+    
+    total_reward = [0.0]*number_validation_episodes
+    
+    for ep in range(number_validation_episodes):
+        
+        time.sleep(2)
+        
+        print("Validation Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
+    
+        number_active_epucks = np.random.randint(number_epucks+1)
+        number_active_obstacles = np.random.randint(number_obstacles+1)
+        
+        start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+        target_position = start_positions[len(start_positions)-1,:]
+    
+        target_dummy.set_pos(target_position)
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
+            
+        reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+        
+        reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+    
+        start_sim()
+        
+        time.sleep(0.5)
+        
+        ego_puck.sensor_sweep(obstacles)
+        
+        if laser_sens:
+            ego_puck.laser_sensor_sweep()
+            
+        ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
+        
+        ego_puck.distance_reward = ego_puck.calc_distance_reward(0.5)
+        ego_puck.calc_distance_to_objects_reward(3)
+        
+        s_t = ego_puck.nn_input
+     
+        for j in range(max_steps):
+            a_t = np.zeros([1,action_dim])
+            
+            a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+
+            a_t[0][0] = a_t_original[0][0]
+            a_t[0][1] = a_t_original[0][1]
+
+            done = ego_puck.step(a_t[0], obstacles, j, 0.2, laser_sens)
+            s_t1 = ego_puck.nn_input
+            r_t = ego_puck.step_reward
+    
+            total_reward[ep] += r_t
+            s_t = s_t1
+        
+            print("Validation Episode", ep, "Action", a_t, "Reward", r_t)
+            print("")
+        
+            if done:
+                break    
+        
+        stop_sim()
+        
+        if total_reward[ep] > 0:
+            ep_success.append(1)
+        else:
+            ep_success.append(0)
+            
+        print("TOTAL REWARD @ " + str(ep) +"-th Validation Episode  : Reward " + str(total_reward[ep]))
+        print("")
+        
+        ep+=1
+        
+    success_ratio = np.mean(ep_success)
+    
+    reward_mean = np.mean(total_reward)
+    reward_std = np.std(total_reward)
+    
+    return success_ratio, reward_mean, reward_std
+        
+    
         
         
 #%% Main Script
@@ -912,7 +1013,7 @@ import timeit
 OU = OU()       #Ornstein-Uhlenbeck Process
 
 #def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
-train_indicator = 0
+train_indicator = 1
 BUFFER_SIZE = 100000
 BATCH_SIZE = 32
 GAMMA = 0.99
@@ -922,7 +1023,7 @@ LRC = 0.001     #Lerning rate for Critic
 
 #np.random.seed(1337)
 
-EXPLORE = 200000.
+EXPLORE = 100000.
 episode_count = 10000
 max_steps = 1000
 reward = 0
@@ -932,14 +1033,16 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
-vrep_port = 19999
-load_weights = True
+vrep_port = 19996
+load_weights = False
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-08-17'
-ckpt_ep = 9000
-ckpt_step = 401174
+ckpt_ep = 8700
+ckpt_step = 382196
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
-headless = False
+headless = True
+
+laser_sens = False #default is 'radar' sens
 
 if load_weights:
     step = ckpt_step
@@ -954,7 +1057,10 @@ number_obstacles = 11
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
 action_dim = 2  # Angluar_Velocity| Linear_Velocity
-state_dim = (number_epucks+number_obstacles)*5 + 9  # of sensors input for radar
+
+state_dim = (number_epucks+number_obstacles)*5 + 10  # of sensors input for radar
+if laser_sens:
+    state_dim = 181 + 1
 
 #Tensorflow GPU optimization
 config = tf.ConfigProto()
@@ -967,6 +1073,10 @@ actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
 critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
 buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
+sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
+f = open(sr_record_filename,"w+")
+f.close()
+
 while ep <= episode_count:
     
     if epsilon <= 0:
@@ -974,10 +1084,10 @@ while ep <= episode_count:
 
     # Generate a Torcs environment
     if open_vrep:
-        initialise_vrep(19998, headless)
+        initialise_vrep(vrep_port, headless)
         #epucks = create_epucks(number_epucks, False)
         
-    clientID = setup_vrep_comms(19998)
+    clientID = setup_vrep_comms(vrep_port)
     
     ego_puck = epuck(0, True)
     obstacles = create_obstacles(number_obstacles)
@@ -1000,7 +1110,7 @@ while ep <= episode_count:
     
     print("Experiment Start.")
     ckpt_ep_set = ckpt_ep
-    while (ep < ckpt_ep_set+201):
+    while (ep <= ckpt_ep_set+250):
         
         time.sleep(2)
     
@@ -1040,15 +1150,21 @@ while ep <= episode_count:
             
     #    for i in range(number_active_epucks):
     #        t[i].start()
-            
+        
         ego_puck.sensor_sweep(obstacles)
+        
+        if laser_sens:
+            ego_puck.laser_sensor_sweep()
+            
+        ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
+        
         ego_puck.distance_reward = ego_puck.calc_distance_reward(0.5)
         ego_puck.calc_distance_to_objects_reward(3)
         
         s_t = ego_puck.nn_input
      
         total_reward = 0.
-        for j in range(max_steps):
+        for j in range(1, max_steps):
             loss = 0 
             epsilon -= 1.0 / EXPLORE
             a_t = np.zeros([1,action_dim])
@@ -1061,7 +1177,7 @@ while ep <= episode_count:
             a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
             a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
     
-            done = ego_puck.step(a_t[0], obstacles, 0.2)
+            done = ego_puck.step(a_t[0], obstacles, j, 0.2, laser_sens)
             s_t1 = ego_puck.nn_input
             r_t = ego_puck.step_reward
         
@@ -1100,14 +1216,9 @@ while ep <= episode_count:
         
             step += 1
             if done:
-                stop_sim()
                 break
-            
-            if loss == np.inf:
-                stop_sim()
-                print('Disappearing ePuck error. Exiting....')
-                sys.exit()
-                break
+
+        stop_sim()
     
         if np.mod(ep, 10) == 0:
             if (train_indicator):
@@ -1133,10 +1244,18 @@ while ep <= episode_count:
                 copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
                 copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
                 
-                pickling_on = open("buff.pickle","wb")
-                pickle.dump(buff, pickling_on)
-                pickling_on.close()
-                copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+                if np.mod(ep, 250) == 0:
+                    pickling_on = open("buff.pickle","wb")
+                    pickle.dump(buff, pickling_on)
+                    pickling_on.close()
+                    copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+                    
+                    success_ratio, reward_mean, reward_std = validation_run(50)
+                    f = open(sr_record_filename,"a")
+                    record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + '\n'
+                    f.write(record)
+                    f.close()
+                    copyfile(sr_record_filename, ckpt_path + sr_record_filename)
     
         print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
         print("Total Step: " + str(step))
