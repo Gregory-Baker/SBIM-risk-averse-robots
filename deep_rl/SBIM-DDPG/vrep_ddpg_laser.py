@@ -16,6 +16,10 @@ import math
 from subprocess import Popen, PIPE
 from matplotlib import path
 import threading
+from shutil import copyfile
+import os
+import datetime
+import pickle
 # import matplotlib.pyplot as plt
 
 #%% MIsc parameters
@@ -102,7 +106,7 @@ class epuck:
 # Setters
         
     def set_pos(self, 
-                position: '[x y] metres'):
+                position):
         
         self.position = position
         
@@ -115,7 +119,7 @@ class epuck:
         vrep.simxSetObjectPosition(clientID, self.handle, -1, position, vrep.simx_opmode_oneshot)
 
     def set_ang(self, 
-                angle: 'rad'):
+                angle):
         
         # Convert angle to euler angle
         eulerAngles = [0, 0, angle]
@@ -124,8 +128,8 @@ class epuck:
         vrep.simxSetObjectOrientation(clientID, self.handle, -1, eulerAngles, vrep.simx_opmode_oneshot)
     
     def set_vel(self, 
-                linear_velocity: 'm/s', 
-                angular_velocity: 'rad/sec'):
+                linear_velocity, 
+                angular_velocity):
         
         # Convert to wheel velocities
         vel_r = linear_velocity + self.wheel_sep*angular_velocity/2
@@ -223,9 +227,8 @@ class epuck:
         return distance_to_target, angle_to_target
     
     def relative_velocity(self,
-                          v_object: 'linear velocity of other object',
-                          angle: 'angle to other object in coordinate system of ego_bot'
-                          ):
+                          v_object,
+                          angle):
         
         # translate to world coordinate frame
         alpha = self.angle + angle 
@@ -237,33 +240,17 @@ class epuck:
         
     
     def dist_ang_to_objects(self,
-                            epucks: 'array containing other ePuck objects',
-                            obstacles: 'array of obstacles'):
+                            objects):
         
         i = 0
         
-        for robot in epucks:
-            distance, angle = self.dist_ang_to_target(robot.position)
+        for obj in objects:
+            distance, angle = self.dist_ang_to_target(obj.position)
             if (distance < self.sensor_distance) and (self.sensor_angle[0] < angle < self.sensor_angle[1]):
                 self.scan_dist[i] = distance
                 self.scan_ang[i] = angle
-                self.velocity_towards[i], self.velocity_perpendicular[i] = self.relative_velocity(robot.linearVelocity, angle)
-                self.object_radii[i] = robot.radius
-            else:
-                self.scan_dist[i] = 0
-                self.scan_ang[i] = 0
-                self.velocity_towards[i] = 0
-                self.velocity_perpendicular[i] = 0
-                self.object_radii[i] = 0
-            i += 1
-            
-        for obs in obstacles:
-            distance, angle = self.dist_ang_to_target(obs.position)
-            if (distance < self.sensor_distance) and (self.sensor_angle[0] < angle < self.sensor_angle[1]):
-                self.scan_dist[i] = distance
-                self.scan_ang[i] = angle
-                self.velocity_towards[i], self.velocity_perpendicular[i] = self.relative_velocity([0,0], angle)
-                self.object_radii[i] = obs.radius
+                self.velocity_towards[i], self.velocity_perpendicular[i] = self.relative_velocity(obj.linearVelocity, angle)
+                self.object_radii[i] = obj.radius
             else:
                 self.scan_dist[i] = 0
                 self.scan_ang[i] = 0
@@ -283,13 +270,16 @@ class epuck:
         scan_matrix_nonzero_sorted = scan_matrix_nonzero[scan_matrix_nonzero[:,0].argsort()]
         num_zero_cols = scan_matrix.shape[0] - scan_matrix_nonzero.shape[0]
         scan_matrix_pad = np.zeros(scan_matrix.shape)
-        scan_matrix_pad[:-num_zero_cols, :] = scan_matrix_nonzero_sorted
+        if num_zero_cols != 0:
+            scan_matrix_pad[:-num_zero_cols, :] = scan_matrix_nonzero_sorted
+        else:
+            scan_matrix_pad = scan_matrix_nonzero_sorted
         
         self.scan_matrix = scan_matrix_pad
-    
+        
     
     def dist_to_walls(self,
-                      map_points: 'works on square maps only'):
+                      map_points):
         
         arena_dims = [max(map_points[:,0]), max(map_points[:,1])]
         
@@ -304,21 +294,68 @@ class epuck:
         self.velocity[1] = self.linearVelocity[1]
         self.velocity[2] = self.angularVelocity[2]
         
-    def radar_observation(self):
+    def radar_observation(self, objects):
         
-        self.dist_ang_to_objects(epucks, obstacles)
+        self.dist_to_target, self.ang_to_target = self.dist_ang_to_target(self.target_position)
+        self.dist_ang_to_objects(objects)
         self.dist_to_walls(map_points)
         self.velocity_inputs()
         self.nn_input = np.concatenate((self.scan_matrix.flatten(), np.array(self.distance_to_wall), np.array(self.velocity), [self.dist_to_target], [self.ang_to_target]))
         
+    def sensor_sweep(self, objects):
+        
+        self.get_all()
+        self.read_force_sens()
+        self.radar_observation(objects)
+        
+    def laser_sensor_sweep(self):
+        self.get_all()
+        self.read_force_sens()
+        self.read_laser_sens()
+        self.nn_input = self.laserDist
         
 #-----------------------------------------------------------------------------
 # Reward Functions
         
     def calc_distance_reward(self,
-                             drop_off_exponent = 1):
+                     dist_to_target,
+                     drop_off_exponent = 1):
         
-        self.distance_reward = (1 - np.tanh(self.dist_to_target))**drop_off_exponent
+        distance_reward = (1 - np.tanh(dist_to_target))**drop_off_exponent
+        
+        return distance_reward
+        
+    def calc_distance_reward_delta(self,
+                                   dist_to_target,
+                                   drop_off_exponent = 1):
+        
+        self.distance_reward_prev = self.distance_reward
+        
+        self.distance_reward = self.calc_distance_reward(dist_to_target, drop_off_exponent)
+        
+        self.distance_reward_delta = self.distance_reward - self.distance_reward_prev
+        
+    def calc_distance_to_objects_reward(self,
+                                        drop_off_exponent = 1):
+        
+        distance_to_object_reward = [0]*len(self.scan_dist)
+        
+        for i in range(len(self.scan_dist)):
+            
+            if not (self.scan_dist[i] == 0):
+                distance_to_object_reward[i] = -np.cos(self.scan_ang[i]) * self.calc_distance_reward((self.scan_dist[i]-self.object_radii[i]), drop_off_exponent)
+                    
+        self.distance_to_objects_reward = min(distance_to_object_reward)
+                    
+    def calc_distance_to_objects_delta(self,
+                                       drop_off_exponent = 1):
+    
+        self.distance_to_objects_reward_prev = self.distance_to_objects_reward
+        
+        self.calc_distance_to_objects_reward(drop_off_exponent)
+        
+        self.distance_to_objects_reward_delta = self.distance_to_objects_reward - self.distance_to_objects_reward_prev
+        
         
     def calc_completion_reward(self,
                                proximity_to_target = 0.05):
@@ -340,7 +377,7 @@ class epuck:
         
         self.calc_completion_reward()
         self.calc_crash_reward()
-        self.calc_distance_reward()
+        self.calc_distance_reward(self.dist_to_target)
         
         self.total_reward = self.distance_reward + self.completion_reward + self.crash_reward + step_reward
         
@@ -352,9 +389,9 @@ class epuck:
 #-----------------------------------------------------------------------------
 
     def move_to_target(self, 
-                       target: '[x y] metres', 
-                       linear_velocity: 'm/s',
-                       stop_at_target: 'bool',
+                       target, 
+                       linear_velocity,
+                       stop_at_target,
                        force_sens = False,
                        laser_sens = False,
                        radar_sens = False,
@@ -390,11 +427,68 @@ class epuck:
             angular_velocity = 2*self.ang_to_target
             self.set_vel(linear_velocity, angular_velocity)
                     
-            print(f'Cumulative Reward: {self.cumulative_reward}')
+#            print(f'Cumulative Reward: {self.cumulative_reward}')
             
             time.sleep(0.05)
         
         stop_sim()
+        
+    def step(self,
+             action,
+             objects,
+             time_step,
+             step_time = 0,
+             laser_sens = False,
+             proximity_to_target = 0.1):
+        
+        done = False
+        
+        step_penalty = -0.01*time_step
+        
+        _, sim_run = vrep.simxGetInMessageInfo(clientID, vrep.simx_headeroffset_server_state)
+        if(sim_run == 0):
+            print('sim no runsies')
+            done = True
+            
+        self.set_vel(0.4*action[1], 1.5*action[0])
+        
+        cmd_time_start = vrep.simxGetLastCmdTime(clientID)
+        
+        cmd_time_diff = 0
+        step_time_milli = step_time*1000
+        
+        while cmd_time_diff < step_time_milli:
+            self.get_ang()
+            cmd_time = vrep.simxGetLastCmdTime(0)
+            cmd_time_diff = cmd_time - cmd_time_start
+        
+        self.sensor_sweep(objects)
+        
+        if laser_sens:
+            self.laser_sensor_sweep()
+            
+        self.nn_input = np.concatenate((self.nn_input, [j/max_steps]))
+        
+        self.calc_distance_reward_delta(0.5)
+        self.calc_distance_to_objects_delta(3)
+        
+        if 0.4 < self.forceMag < 100:
+            print('easy cowboy')
+            self.crash_reward = -200*self.forceMag
+            done = True
+        else:
+            self.crash_reward = 0
+        
+        if self.dist_to_target < proximity_to_target:
+            print('target acquired')
+            self.completion_reward = 200
+            done = True
+        else:
+            self.completion_reward = 0
+        
+        self.step_reward = self.distance_reward_delta*100 + self.distance_to_objects_reward_delta*5 + self.completion_reward + self.crash_reward + step_penalty
+        
+        return done
             
             
     def avoid_obstacles(self,
@@ -427,7 +521,7 @@ class epuck:
         
         
     def random_walk(self,
-                    linear_velocity: 'm/s',
+                    linear_velocity,
                     angular_velocity_std_dev = 0.1,
                     epsilon_straight = 0.02):
         
@@ -463,10 +557,11 @@ class obstacle:
     def __init__(self, handle, dimensions):
         self.handle = handle
         self.dimensions = dimensions
+        self.linearVelocity = [0, 0, 0]
         
         
     def set_pos(self, 
-            position: '[x y] metres'):
+            position):
         
         self.position = position
     
@@ -479,7 +574,7 @@ class obstacle:
         vrep.simxSetObjectPosition(clientID, self.handle, -1, position, vrep.simx_opmode_oneshot)
         
     def set_ang(self, 
-        angle: 'rad'):
+                angle):
         
         # Convert angle to euler angle
         eulerAngles = [0, 0, angle]
@@ -490,7 +585,7 @@ class obstacle:
 class cuboid (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.width = dimensions[0]
         self.depth = dimensions[1]
         self.height = dimensions[2]
@@ -501,7 +596,7 @@ class cuboid (obstacle):
 class cylinder (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.radius = dimensions[0]
         self.height = dimensions[2]
         self.type = 1
@@ -509,13 +604,13 @@ class cylinder (obstacle):
 class dummy (obstacle):
     
     def __init__ (self, handle, dimensions):
-        super().__init__(handle, dimensions)
+        obstacle.__init__(self, handle, dimensions)
         self.height = dimensions
         
 
 #%%
         
-def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
+def create_obstacle(obstacle_type_int,
                     mean = 0.18,
                     std_dev = 0.05):
     
@@ -535,6 +630,22 @@ def create_obstacle(obstacle_type_int: '0 = cuboid, 1 = cylinder',
     
     return obstacle_handle, obstacle_dimensions
 
+def create_obstacles(number_obstacles,
+                     default_position = [-1.2,0.5]):
+    
+    obstacles = []
+
+    for i in range(number_obstacles):
+        obs_type = np.random.randint(2)
+        obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
+        if obs_type == 0:
+            obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
+        else:
+            obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
+        obstacles[i].set_pos(default_position)
+        
+    return obstacles
+
 def create_dummy(dummy_size = 0.05,
                  colors = None):
     
@@ -546,17 +657,24 @@ def get_dummy_handle():
     
     _, dummyHandle = vrep.simxGetObjectHandle(clientID, 'Dummy', vrep.simx_opmode_blocking)
     
+    if dummyHandle == 0:
+        dummyHandle = create_dummy()
+    
     return dummyHandle
+
+def place_dummy(dummy_handle, position):
+    
+    target_dummy.set_pos(position)
                                      
 #%% Function to start VREP
 
-def initialise_vrep(scene_name: 'str', 
-                    vrep_port: 'int', 
-                    headless: 'bool'):
+def initialise_vrep(#scene_name, 
+                    vrep_port, 
+                    headless):
     
     # Defines path to VREP folder
-    path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux'
-    path_to_scenes = '../../vrep_scenes/test_scenes'
+    path_to_vrep = '/home/greg/Programs/V-REP_PRO_EDU_V3_5_0_Linux/vrep.sh'
+#    path_to_scenes = '../../vrep_scenes/test_scenes'
     
     # Converts vrep initialisation settings to arguments recognised by vrep
     head_call = ''
@@ -567,13 +685,12 @@ def initialise_vrep(scene_name: 'str',
     vrep.simxFinish(-1) 
     
     # Command-line call to initialise vrep
-    Popen(["nice", "-n", "-20", f"{path_to_vrep}/vrep.sh", head_call, '', '',
-           f"-gREMOTEAPISERVERSERVICE_{vrep_port}_FALSE_FALSE", 
-           f"{path_to_scenes}/{scene_name}.ttt"], 
-            stdout=PIPE, stderr=PIPE)
+    Popen(["nice", "-n", "-20", path_to_vrep, head_call, '', '', "-gREMOTEAPISERVERSERVICE_" + str(vrep_port) + "_FALSE_FALSE", "../../vrep_scenes/test_scenes/epuck_arena_multi_spawn.ttt"], stdout=PIPE, stderr=PIPE)
     
     # Allow vrep to boot before initialising comms
     time.sleep(5)
+    
+def setup_vrep_comms(vrep_port):
     
     # Sets up communication between python and vrep
     clientID = vrep.simxStart('127.0.0.1',vrep_port,True,True,15000,5)
@@ -587,15 +704,25 @@ def initialise_vrep(scene_name: 'str',
     return clientID
 
 
+def start_sim():
+    
+    vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
+
 def stop_sim():
     
     vrep.simxStopSimulation(clientID, vrep.simx_opmode_oneshot)
+    
+def quit_vrep():
+    
+    res, _, _, _, _ = vrep.simxCallScriptFunction(clientID, 'remoteApiCommandServer', vrep.sim_scripttype_customizationscript, 'quitVrep', [], [], [], emptyBuff, vrep.simx_opmode_blocking)
+    
+    return res
 
 #%%
     
-def calculate_positions(map_points: 'np.array of points',
-                number_of_points: 'number of points to be calculated',
-                min_spacing: 'minimum euc distance between points'):
+def calculate_positions(map_points,
+                        number_of_points,
+                        min_spacing):
 
     map_buffer = buffer_map(map_points, min_spacing)
     
@@ -627,10 +754,10 @@ def calculate_positions(map_points: 'np.array of points',
     return positions
 
 
-def extra_position(map_points: 'np.array of points',
-                 positions: 'positions',
-                 radii: 'array of radii of existing objects',
-                 radius: 'radius of new object'):
+def extra_position(map_points,
+                   positions,
+                   radii,
+                   radius):
     
     map_buffer = buffer_map(map_points, radius)
     
@@ -668,7 +795,7 @@ def delete_objects(object_array):
         vrep.simxRemoveObject(clientID, obj.handle, vrep.simx_opmode_oneshot)
         
         
-def buffer_map(map_points: 'n x 2 numpy array',
+def buffer_map(map_points,
                buffer = 0.1):
     
     map_buffer = map_points.flatten()
@@ -683,7 +810,7 @@ def buffer_map(map_points: 'n x 2 numpy array',
     
     return map_buffer
 
-def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
+def clone_sensor(sensor_handle,
                  turn_angle):
     
     _, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [sensor_handle], vrep.simx_opmode_blocking)
@@ -699,9 +826,9 @@ def clone_sensor(sensor_handle: 'handle of sensor to be cloned',
     return new_sensor_handle
 
 
-def create_sensor_array(sensor_name: 'name of sensor to be cloned',
-                        number_sensors: 'number to be added',
-                        angle_between_sensors: 'deg'):
+def create_sensor_array(sensor_name,
+                        number_sensors,
+                        angle_between_sensors):
     
     _, sensor_handle = vrep.simxGetObjectHandle(clientID, sensor_name, vrep.simx_opmode_blocking)
 
@@ -718,13 +845,16 @@ def create_epucks(number_epucks,
                   copy_object = False):
     
     epuck_array = []
-    epuck_array.append(epuck(1))
     
-    for i in range(2, number_epucks+1):
-        if copy_object:
-            returnCode, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [epuck_array[0].handle], vrep.simx_opmode_blocking)
-        robot = epuck(i)
-        epuck_array.append(robot)
+    if number_epucks > 0:
+        
+        epuck_array.append(epuck(1))
+        
+        for i in range(2, number_epucks+1):
+            if copy_object:
+                returnCode, newObjectHandles = vrep.simxCopyPasteObjects(clientID, [epuck_array[0].handle], vrep.simx_opmode_blocking)
+            robot = epuck(i)
+            epuck_array.append(robot)
         
     return epuck_array
         
@@ -733,153 +863,429 @@ def reset_objects(objects, position):
     for obj in objects:
         obj.set_pos(position)
         
-
-#%%--------------------------------------------------------------- 
-# Main script
-    
-number_epucks = 6
-    
-# Prompt user for vrep startup options    
-answer = 0
-while answer == 0:
-    
-    start_sim = False
-    start_vrep = input("Start a new vrep session, y/n? ")
-    if start_vrep == 'y':
-        # initialise vrep
-        headless = False        
-        headless_yn = input("Headless? y/n ")
-        if headless_yn == 'y':
-            headless = True
-                
-        clientID = initialise_vrep(
-                    'epuck_arena_multi_spawn', 19998, headless)
+def reset_epucks(epucks,
+                 number_active_epucks,
+                 start_positions):
+          
+    for i in range(number_active_epucks):
+        epucks[i].set_pos(start_positions[i,:])
+        epucks[i].set_ang(np.random.rand()*2*math.pi)
         
-        epucks = create_epucks(number_epucks, False)
-        answer = 1
-    elif start_vrep == 'n':
-        clientID = 0
-        answer = 1
-    else:
-        print("please type 'y' to start vrep or 'n' to use open vrep program\n")        
-
-ego_puck = epuck(0, True)
-
-
-#%% Size of arena (map)
+def reset_obstacles(obstacles,
+                    number_active_obstacles,
+                    start_positions,
+                    map_points,
+                    radii):
     
+    reset_objects(obstacles, [-1.2, 0.5])
+    
+    for i in range(number_active_obstacles):
+        obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
+        obstacles[i].set_pos(obstacles[i].position)
+        obstacles[i].set_ang(np.random.rand()*2*math.pi)
+        
+def reset_ego_puck(ego_puck,
+                   start_positions,
+                   target_position,
+                   number_epucks,
+                   number_obstacles,
+                   number_active_epucks):
+    
+    # Set ego_puck starting parameters
+    ego_puck.set_vel(0,0)
+    ego_puck.set_pos(start_positions[number_active_epucks,:])
+    ego_puck.set_ang(np.random.rand()*2*math.pi)
+    ego_puck.target_position = target_position
+    
+    # Set up arrays for NN input parameters recorded by ego_puck
+    ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
+    ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
+    ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
+    ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
+    ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
+    
+    
+def validation_run(number_validation_episodes):
+    
+    max_steps = 200
+    
+    ep_success = []
+    
+    total_reward = [0.0]*number_validation_episodes
+    
+    for ep in range(number_validation_episodes):
+        
+        time.sleep(2)
+        
+        print("Validation Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
+    
+        number_active_epucks = np.random.randint(number_epucks+1)
+        number_active_obstacles = np.random.randint(number_obstacles+1)
+        
+        start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+        target_position = start_positions[len(start_positions)-1,:]
+    
+        target_dummy.set_pos(target_position)
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
+            
+        reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+        
+        reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+    
+        start_sim()
+        
+        time.sleep(0.5)
+        
+        ego_puck.sensor_sweep(obstacles)
+        
+        if laser_sens:
+            ego_puck.laser_sensor_sweep()
+            
+        ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
+        
+        ego_puck.distance_reward = ego_puck.calc_distance_reward(0.5)
+        ego_puck.calc_distance_to_objects_reward(3)
+        
+        s_t = ego_puck.nn_input
+     
+        for j in range(max_steps):
+            a_t = np.zeros([1,action_dim])
+            
+            a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+
+            a_t[0][0] = a_t_original[0][0]
+            a_t[0][1] = a_t_original[0][1]
+
+            done = ego_puck.step(a_t[0], obstacles, j, 0.2, laser_sens)
+            s_t1 = ego_puck.nn_input
+            r_t = ego_puck.step_reward
+    
+            total_reward[ep] += r_t
+            s_t = s_t1
+        
+            print("Validation Episode", ep, "Action", a_t, "Reward", r_t)
+            print("")
+        
+            if done:
+                break    
+        
+        stop_sim()
+        
+        if total_reward[ep] > 0:
+            ep_success.append(1)
+        else:
+            ep_success.append(0)
+            
+        print("TOTAL REWARD @ " + str(ep) +"-th Validation Episode  : Reward " + str(total_reward[ep]))
+        print("")
+        
+        ep+=1
+        
+    success_ratio = np.mean(ep_success)
+    
+    reward_mean = np.mean(total_reward)
+    reward_std = np.std(total_reward)
+    
+    return success_ratio, reward_mean, reward_std
+        
+    
+        
+        
+#%% Main Script
+        
+import random
+import argparse
+from keras.models import model_from_json, Model
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation, Flatten
+from keras.optimizers import Adam
+import tensorflow as tf
+#from keras.engine.training import collect_trainable_weights
+import json
+        
+from ReplayBuffer import ReplayBuffer
+from ActorNetwork import ActorNetwork
+from CriticNetwork import CriticNetwork
+    
+from OU import OU
+import timeit
+
+OU = OU()       #Ornstein-Uhlenbeck Process
+
+#def playGame(train_indicator=1):    #1 means Train, 0 means simply Run
+train_indicator = 1
+BUFFER_SIZE = 100000
+BATCH_SIZE = 32
+GAMMA = 0.99
+TAU = 0.001     #Target Network HyperParameters
+LRA = 0.0001    #Learning rate for Actor
+LRC = 0.001     #Lerning rate for Critic
+
+#np.random.seed(1337)
+
+EXPLORE = 100000.
+episode_count = 10000
+max_steps = 1000
+reward = 0
+done = False
+epsilon = 1
+indicator = 0
+
+clientID = 0
+open_vrep = True
+vrep_port = 19996
+load_weights = False
+ckpt_folder = 'weight_archive'
+ckpt_date = '2018-08-17'
+ckpt_ep = 8700
+ckpt_step = 382196
+ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
+headless = True
+run_validation = True
+obs_only = False
+
+# Noise hyperparameters for OU function. [[Ang velocity], [Lin velocity]]
+noise_hps = np.array([[0.0 , 0.7, 0.5], [0.15 , 1.0, 0.03]])
+
+laser_sens = False #default is 'radar' sens
+
+if load_weights:
+    step = ckpt_step
+    ep = ckpt_ep+1
+else:
+    step = 0
+    ckpt_ep = 0
+    ep = 1
+    ckpt_date = datetime.date.today()
+
+number_epucks = 6
+number_obstacles = 5
 map_points = np.array([[0,0],[0,1.5],[2,1.5],[2,0]])
 
+action_dim = 2  # Angluar_Velocity| Linear_Velocity
+
+state_dim = (number_epucks+number_obstacles)*5 + 10  # of sensors input for radar
+if laser_sens:
+    state_dim = 181 + 1
+
+#Tensorflow GPU optimization
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+sess = tf.Session(config=config)
+from keras import backend as K
+K.set_session(sess)
+
+actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
+critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
+buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
+
+sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
+f = open(sr_record_filename,"w+")
+info = 'Laser Sensor:,' + str(laser_sens) + '\n' + 'Angular Velocity Noise Hyperparameters:,' + str(noise_hps[0,0]) + ',' + str(noise_hps[0,1]) + ',' + str(noise_hps[0,2]) + '\n' + 'Linear Velocity Noise Hyperparameters:,' + str(noise_hps[1,0]) + ',' + str(noise_hps[1,1]) + ',' + str(noise_hps[1,2]) + '\n'
+f.write(info)
+f.close()
+
+while ep <= episode_count:
+    
+    if epsilon <= 0:
+        epsilon = 1.0
+
+    # Open vrep and start comms
+    if open_vrep:
+        initialise_vrep(vrep_port, headless)
+        clientID = setup_vrep_comms(vrep_port)
+
+        epucks = np.array(create_epucks(number_epucks, False))
+        ego_puck = epuck(0, True)    
+        obstacles = np.array(create_obstacles(number_obstacles))
+        objects = np.concatenate((obstacles, epucks))
         
-#%% Create obstacles
-
-number_obstacles = 5
-obstacles = []
-
-for i in range(number_obstacles):
-    obs_type = np.random.randint(2)
-    obstacle_handle, obstacle_dimensions = create_obstacle(obs_type)
-    if obs_type == 0:
-        obstacles.append(cuboid(obstacle_handle, obstacle_dimensions))
-    else:
-        obstacles.append(cylinder(obstacle_handle, obstacle_dimensions))
-    obstacles[i].set_pos([-1.2,0.5])
-
-#%% Randomise ePuck starting positions
+        dummy_handle = get_dummy_handle()    
+        target_dummy = dummy(dummy_handle,0.05)
     
-# reset ePuck positions
-for robot in epucks:
-    x_pos = -1 -int(robot.i)/10
-    robot.set_pos([x_pos, 1])
-
-# Minimum initial spacing between robots (m)
-epuck_min_spacing = 0.2
-
-# array of robot and obstacle radii, used to avoid placing obstacles on top of robots
-radii = [0.05]
-
-# number of epucks in arena
-number_active_epucks = np.random.randint(number_epucks+1)
-print(f'Number of active ePucks: {number_active_epucks}')
-
-# Randomised starting position with minimum spacing and buffer dist from arena walls
-start_positions = calculate_positions(map_points, number_active_epucks+2, epuck_min_spacing)
-target_position = start_positions[len(start_positions)-1,:]
-
-# Move dummy to highlight target position
-target_dummy = dummy(get_dummy_handle(),0.05)
-target_dummy.set_pos(target_position)
-
-# Set epuck starting parameters
-for robot in epucks:
-    robot.set_vel(0,0)
-    radii.append(0.05)
-
-for i in range(number_active_epucks):
-    epucks[i].set_pos(start_positions[i,:])
-    epucks[i].set_ang(np.random.rand()*2*math.pi)
-
-# number of obstacles in arena
-number_active_obstacles = np.random.randint(number_obstacles+1)
-print(f'Number of obstacles: {number_active_obstacles}')
-
-# Caluclate positions for obstacles that dont impact robot positions
-for obs in obstacles:
-    radii.append(obs.radius)
-
-for i in range(number_active_obstacles):
-    obstacles[i].position = extra_position(map_points, start_positions, radii, obstacles[i].radius)
-    obstacles[i].set_pos(obstacles[i].position)
-    obstacles[i].set_ang(np.random.rand()*2*math.pi)
+    if load_weights:
+        #Now load the weight
+        print("Now we load the weight")
+        try:
+            actor.model.load_weights(ckpt_path + "actormodel.h5")
+            critic.model.load_weights(ckpt_path + "criticmodel.h5")
+            actor.target_model.load_weights(ckpt_path + "actormodel.h5")
+            critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
+            pickle_off = open(ckpt_path + "buff.pickle","rb")
+            buff = pickle.load(pickle_off)
+            print("Weight load successfully")
+        except:
+            print("Cannot find the weight")
     
-
-# Set ego_puck starting parameters
-ego_puck.set_vel(0,0)
-ego_puck.set_pos(start_positions[number_active_epucks,:])
-ego_puck.set_ang(np.random.rand()*2*math.pi)
-
-# Set up arrays for NN input parameters recorded by ego_puck
-ego_puck.scan_dist = [None]*(number_epucks + number_obstacles)
-ego_puck.scan_ang = [None]*(number_epucks + number_obstacles)
-ego_puck.velocity_towards = [None]*(number_epucks + number_obstacles)
-ego_puck.velocity_perpendicular = [None]*(number_epucks + number_obstacles)
-ego_puck.object_radii = [None]*(number_epucks + number_obstacles)
+    print("Experiment Start.")
+    ckpt_ep_set = ckpt_ep
+    while (ep <= ckpt_ep_set+250):
+        
+        time.sleep(2)
     
-#%%
-
-start_sim = input("Start the simulation, press Enter (or n to cancel): ")
-if start_sim == 'n':
-    delete_objects(obstacles)
-    sys.exit()
-
-returnCode = vrep.simxStartSimulation(clientID, vrep.simx_opmode_oneshot)
-
-time.sleep(1)
-
-t = [None]*(number_epucks+1)
-
-for i in range(number_active_epucks):
-    #robot_velocity = np.absolute(np.random.normal(0.1,0.02))
-    robot_velocity = np.random.gumbel(0.1,0.02)
-    print(f'Velocity of ePuck#{i+1}: {robot_velocity}')
+        print("Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
     
-    t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+        number_active_epucks = np.random.randint(number_epucks+1)
+        number_active_obstacles = np.random.randint(number_obstacles+1)
+        
+        start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+        target_position = start_positions[len(start_positions)-1,:]
+        
+        if not obs_only:
+            for robot in epucks:
+                x_pos = -1.0-float(robot.i)/10
+                robot.set_pos([x_pos, 1])
+                robot.set_vel(0,0)
     
-t[number_active_epucks] = threading.Thread(target = ego_puck.move_to_target, args = (target_position,0.15,True,True,False,True))
-
-for i in range(number_active_epucks+1):
-    t[i].start()
-
-for i in range(number_active_epucks+1):
-    t[i].join()
-
-for i in range(number_epucks):
-    epucks[i].set_vel(0,0)
-
-
-#%% Delete obstacles
+        reset_epucks(epucks, number_active_epucks, start_positions)
+        
+        target_dummy.set_pos(target_position)
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
+            
+        reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+        
+        reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+        
+        t = [None]*(number_active_epucks)
     
-#delete_objects(obstacles)
+        start_sim()
+        
+        time.sleep(0.5)
+        
+        for i in range(number_active_epucks):
+            robot_velocity = np.random.gumbel(0.1,0.02)
+            t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+            
+        for i in range(number_active_epucks):
+            t[i].start()
+        
+        ego_puck.sensor_sweep(obstacles)
+        
+        if laser_sens:
+            ego_puck.laser_sensor_sweep()
+            
+        ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
+        
+        ego_puck.distance_reward = ego_puck.calc_distance_reward(0.5)
+        ego_puck.calc_distance_to_objects_reward(3)
+        
+        s_t = ego_puck.nn_input
+     
+        total_reward = 0.
+        for j in range(1, max_steps):
+            loss = 0 
+            epsilon -= 1.0 / EXPLORE
+            a_t = np.zeros([1,action_dim])
+            noise_t = np.zeros([1,action_dim])
+            
+            a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+            noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  noise_hps[0,0] , noise_hps[0,1] , noise_hps[0,2])
+            noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  noise_hps[1,0] , noise_hps[1,1] , noise_hps[1,2])
+    
+            a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
+            a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
+    
+            done = ego_puck.step(a_t[0], obstacles, j, 0.2, laser_sens)
+            s_t1 = ego_puck.nn_input
+            r_t = ego_puck.step_reward
+        
+            buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
+            
+            #Do the batch update
+            batch = buff.getBatch(BATCH_SIZE)
+            states = np.asarray([e[0] for e in batch])
+            actions = np.asarray([e[1] for e in batch])
+            rewards = np.asarray([e[2] for e in batch])
+            new_states = np.asarray([e[3] for e in batch])
+            dones = np.asarray([e[4] for e in batch])
+            y_t = np.asarray([e[1] for e in batch])
+    
+            target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
+           
+            for k in range(len(batch)):
+                if dones[k]:
+                    y_t[k] = rewards[k]
+                else:
+                    y_t[k] = rewards[k] + GAMMA*target_q_values[k]
+       
+            if (train_indicator):
+                loss += critic.model.train_on_batch([states,actions], y_t) 
+                a_for_grad = actor.model.predict(states)
+                grads = critic.gradients(states, a_for_grad)
+                actor.train(states, grads)
+                actor.target_train()
+                critic.target_train()
+    
+            total_reward += r_t
+            s_t = s_t1
+        
+            print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
+            print("")
+        
+            step += 1
+            if done:
+                break
+
+        stop_sim()
+    
+        if np.mod(ep, 10) == 0:
+            if (train_indicator):
+                print("Now we save model")
+                actor.model.save_weights("actormodel.h5", overwrite=True)
+                with open("actormodel.json", "w") as outfile:
+                    json.dump(actor.model.to_json(), outfile)
+    
+                critic.model.save_weights("criticmodel.h5", overwrite=True)
+                with open("criticmodel.json", "w") as outfile:
+                    json.dump(critic.model.to_json(), outfile)
+                    
+        if np.mod(ep, 50) == 0 and ep !=0:
+            if (train_indicator):
+                print("Creating model checkpoint")
+                ckpt_date = datetime.date.today()
+                ckpt_ep = ep
+                ckpt_step = step
+                ckpt_path = 'weight_archive/'+ str(ckpt_date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
+                os.makedirs(ckpt_path)
+                copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
+                copyfile('actormodel.json', ckpt_path + 'actormodel.json')
+                copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
+                copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
+                
+                if np.mod(ep, 250) == 0:
+                    pickling_on = open("buff.pickle","wb")
+                    pickle.dump(buff, pickling_on)
+                    pickling_on.close()
+                    copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+                    
+                    if run_validation:
+                        success_ratio, reward_mean, reward_std = validation_run(50)
+                        f = open(sr_record_filename,"a")
+                        record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + '\n'
+                        f.write(record)
+                        f.close()
+                        copyfile(sr_record_filename, ckpt_path + sr_record_filename)
+    
+        print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
+        print("Total Step: " + str(step))
+        print("")
+        
+        ep+=1
+    
+    print('Quiting VREP')
+    load_weights = True
+    quit_vrep()
+    time.sleep(15)
+
+print("Finish.")
+
+
 
 
 
