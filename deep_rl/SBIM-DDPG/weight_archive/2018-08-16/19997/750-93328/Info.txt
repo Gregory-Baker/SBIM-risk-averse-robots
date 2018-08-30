@@ -1,0 +1,1 @@
+Trained to episode 700 on policy without object proximity penalty

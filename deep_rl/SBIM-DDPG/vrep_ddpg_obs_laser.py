@@ -1034,23 +1034,26 @@ indicator = 0
 clientID = 0
 open_vrep = True
 vrep_port = 19996
-load_weights = False
+load_weights = True
 ckpt_folder = 'weight_archive'
-ckpt_date = '2018-08-17'
-ckpt_ep = 8700
-ckpt_step = 382196
+ckpt_date = '2018-08-20'
+ckpt_ep = 1250
+ckpt_step = 102128
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 headless = True
+run_validation = False
 
-laser_sens = False #default is 'radar' sens
+laser_sens = True #default is 'radar' sens
 
 if load_weights:
     step = ckpt_step
     ep = ckpt_ep+1
+    epsilon = 1.0 - (np.mod(ckpt_step, EXPLORE)/EXPLORE)
 else:
     step = 0
     ckpt_ep = 0
     ep = 1
+    ckpt_date = datetime.date.today()
 
 number_epucks = 0
 number_obstacles = 11
@@ -1073,9 +1076,10 @@ actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
 critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
 buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
-sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
-f = open(sr_record_filename,"w+")
-f.close()
+if train_indicator:
+    sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
+    f = open(sr_record_filename,"w+")
+    f.close()
 
 while ep <= episode_count:
     
@@ -1087,12 +1091,12 @@ while ep <= episode_count:
         initialise_vrep(vrep_port, headless)
         #epucks = create_epucks(number_epucks, False)
         
-    clientID = setup_vrep_comms(vrep_port)
-    
-    ego_puck = epuck(0, True)
-    obstacles = create_obstacles(number_obstacles)
-    dummy_handle = get_dummy_handle()    
-    target_dummy = dummy(dummy_handle,0.05)
+        clientID = setup_vrep_comms(vrep_port)
+        
+        ego_puck = epuck(0, True)
+        obstacles = create_obstacles(number_obstacles)
+        dummy_handle = get_dummy_handle()    
+        target_dummy = dummy(dummy_handle,0.05)
     
     if load_weights:
         #Now load the weight
@@ -1250,12 +1254,15 @@ while ep <= episode_count:
                     pickling_on.close()
                     copyfile('buff.pickle', ckpt_path + 'buff.pickle')
                     
-                    success_ratio, reward_mean, reward_std = validation_run(50)
-                    f = open(sr_record_filename,"a")
-                    record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + '\n'
-                    f.write(record)
-                    f.close()
-                    copyfile(sr_record_filename, ckpt_path + sr_record_filename)
+                    
+                    if run_validation:
+                        success_ratio, reward_mean, reward_std = validation_run(50)
+                        f = open(sr_record_filename,"a")
+                        record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + '\n'
+                        f.write(record)
+                        f.close()
+                        copyfile(sr_record_filename, ckpt_path + sr_record_filename)
+    
     
         print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
         print("Total Step: " + str(step))
