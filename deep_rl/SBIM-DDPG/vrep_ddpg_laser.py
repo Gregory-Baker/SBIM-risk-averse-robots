@@ -1030,19 +1030,19 @@ clientID = 0
 
 scene_name = 'epuck_arena_multi_1extra'
 open_vrep = True
-vrep_port = 19996
+vrep_port = 19997
 headless =  True
-run_validation = False
+run_validation = True
 validation_runs = 50
 
-load_weights = True
+load_weights = False
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-08-24'
 ckpt_ep = 1200
 ckpt_step = 263464
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 
-laser_sens = False #default is 'radar' sens
+laser_sens = True #default is 'radar' sens
 
 # Noise hyperparameters for OU function. [[Ang velocity], [Lin velocity]]
 noise_hps = np.array([[0.0 , 0.7, 0.5], [0.15 , 1.0, 0.03]])
@@ -1104,7 +1104,8 @@ while ep <= episode_count:
     if open_vrep:
         initialise_vrep(scene_name, vrep_port, headless)
         clientID = setup_vrep_comms(vrep_port)
-
+        
+        epucks = None
         epucks = create_epucks(number_epucks, True)
         ego_puck = epuck(0, True)    
         obstacles = create_obstacles(number_obstacles)
@@ -1129,7 +1130,7 @@ while ep <= episode_count:
     
     print("Experiment Start.")
     ckpt_ep_set = ckpt_ep
-    while (ep <= ckpt_ep_set+100):
+    while (ep <= ckpt_ep_set+200):
         
         if epsilon <= 0:
             epsilon = 1.0
@@ -1161,7 +1162,8 @@ while ep <= episode_count:
         
         reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
         
-        t = [None]*(number_active_epucks)
+        if number_active_epucks != 0:
+            t = [None]*(number_active_epucks)
     
         start_sim()
         
@@ -1243,7 +1245,7 @@ while ep <= episode_count:
 
         stop_sim()
     
-        if np.mod(ep, 10) == 0:
+        if np.mod(ep, 50) == 0:
             if (train_indicator):
                 print("Now we save model")
                 actor.model.save_weights("actormodel.h5", overwrite=True)
@@ -1291,6 +1293,7 @@ while ep <= episode_count:
         ep+=1
     
     print('Quiting VREP')
+    
     load_weights = True
     quit_vrep()
     time.sleep(15)

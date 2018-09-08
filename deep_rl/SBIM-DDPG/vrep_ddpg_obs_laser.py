@@ -310,9 +310,10 @@ class epuck:
         
     def laser_sensor_sweep(self):
         self.get_all()
+        self.dist_to_target, self.ang_to_target = self.dist_ang_to_target(self.target_position)
         self.read_force_sens()
         self.read_laser_sens()
-        self.nn_input = self.laserDist
+        self.nn_input = np.concatenate((self.laserDist, [self.dist_to_target], [self.ang_to_target]))
         
 #-----------------------------------------------------------------------------
 # Reward Functions
@@ -1033,17 +1034,17 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
-vrep_port = 19999
-load_weights = True
+vrep_port = 19998
+load_weights = False
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-08-31'
 ckpt_ep = 10000
 ckpt_step = 901755
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
-headless = False
+headless = True
 run_validation = True
 
-laser_sens = False #default is 'radar' sens
+laser_sens = True #default is 'radar' sens
 
 if load_weights:
     step = ckpt_step
@@ -1063,7 +1064,7 @@ action_dim = 2  # Angluar_Velocity| Linear_Velocity
 
 state_dim = (number_epucks+number_obstacles)*5 + 10  # of sensors input for radar
 if laser_sens:
-    state_dim = 181 + 1
+    state_dim = 181 + 3
 
 #Tensorflow GPU optimization
 config = tf.ConfigProto()
@@ -1224,7 +1225,7 @@ while ep <= episode_count or train_indicator == 0:
 
         stop_sim()
     
-        if np.mod(ep, 10) == 0:
+        if np.mod(ep, 50) == 0:
             if (train_indicator):
                 print("Now we save model")
                 actor.model.save_weights("actormodel.h5", overwrite=True)
