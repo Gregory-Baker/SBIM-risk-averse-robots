@@ -1033,17 +1033,17 @@ indicator = 0
 
 clientID = 0
 open_vrep = True
-vrep_port = 19996
+vrep_port = 19999
 load_weights = True
 ckpt_folder = 'weight_archive'
-ckpt_date = '2018-08-20'
-ckpt_ep = 1250
-ckpt_step = 102128
+ckpt_date = '2018-08-31'
+ckpt_ep = 10000
+ckpt_step = 901755
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
-headless = True
-run_validation = False
+headless = False
+run_validation = True
 
-laser_sens = True #default is 'radar' sens
+laser_sens = False #default is 'radar' sens
 
 if load_weights:
     step = ckpt_step
@@ -1081,7 +1081,7 @@ if train_indicator:
     f = open(sr_record_filename,"w+")
     f.close()
 
-while ep <= episode_count:
+while ep <= episode_count or train_indicator == 0:
     
     if epsilon <= 0:
         epsilon = 1.0

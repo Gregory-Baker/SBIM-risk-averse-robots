@@ -1032,14 +1032,14 @@ scene_name = 'epuck_arena_multi_1extra'
 open_vrep = True
 vrep_port = 19996
 headless =  True
-run_validation = True
+run_validation = False
 validation_runs = 50
 
 load_weights = True
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-08-24'
-ckpt_ep = 800
-ckpt_step = 162666
+ckpt_ep = 1200
+ckpt_step = 263464
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 
 laser_sens = False #default is 'radar' sens
