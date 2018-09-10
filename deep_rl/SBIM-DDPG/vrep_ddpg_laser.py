@@ -438,7 +438,7 @@ class epuck:
         if laser_sens:
             self.laser_sensor_sweep()
             
-        self.nn_input = np.concatenate((self.nn_input, [j/max_steps]))
+        self.nn_input = np.concatenate((self.nn_input, [time_step/max_steps]))
         
         self.calc_distance_reward_delta(do_exp[0])
         self.calc_distance_to_objects_delta(do_exp[1])
@@ -983,6 +983,123 @@ def validation_run(number_validation_episodes):
     reward_std = np.std(total_reward)
     
     return success_ratio, reward_mean, reward_std, total_reward
+
+
+def run_episode(step, epsilon):
+
+    print("Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
+
+    number_active_epucks = np.random.randint(number_epucks+1)
+    number_active_obstacles = np.random.randint(number_obstacles+1)
+    
+    start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
+    target_position = start_positions[len(start_positions)-1,:]
+    
+    for robot in epucks:
+        x_pos = -1.0-float(robot.i)/10
+        robot.set_pos([x_pos, 1])
+        robot.set_vel(0,0)
+
+    reset_epucks(epucks, number_active_epucks, start_positions)
+    
+    target_dummy.set_pos(target_position)
+    
+    radii = [0.05]*(number_epucks+2) 
+    for obs in obstacles:
+        radii.append(obs.radius)
+        
+    reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
+    
+    reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
+    
+#    if number_active_epucks != 0:
+#        t = [None]*(number_active_epucks)
+
+    start_sim()
+    
+    time.sleep(1)
+#    if number_active_epucks != 0:
+#        for i in range(number_active_epucks):
+#            robot_velocity = np.random.gumbel(0.1,0.02)
+#            t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+#            
+#        for i in range(number_active_epucks):
+#            t[i].start()
+    
+    ego_puck.sensor_sweep(objects)
+    
+    if laser_sens:
+        ego_puck.laser_sensor_sweep()
+        
+    ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
+    
+    ego_puck.distance_reward = ego_puck.calc_distance_reward(do_exp[0])
+    ego_puck.calc_distance_to_objects_reward(do_exp[1])
+    
+    s_t = ego_puck.nn_input
+ 
+    total_reward = 0.
+    for j in range(1, max_steps):
+        loss = 0 
+        epsilon -= 1.0 / EXPLORE
+        a_t = np.zeros([1,action_dim])
+        noise_t = np.zeros([1,action_dim])
+        
+        a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
+        noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  noise_hps[0,0] , noise_hps[0,1] , noise_hps[0,2])
+        noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  noise_hps[1,0] , noise_hps[1,1] , noise_hps[1,2])
+
+        a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
+        a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
+
+        done = ego_puck.step(a_t[0], objects, reward_weights, j, 0.2, do_exp, max_vel, laser_sens, 0.1)
+        s_t1 = ego_puck.nn_input
+        r_t = ego_puck.step_reward
+    
+        buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
+        
+        #Do the batch update
+        batch = buff.getBatch(BATCH_SIZE)
+        states = np.asarray([e[0] for e in batch])
+        actions = np.asarray([e[1] for e in batch])
+        rewards = np.asarray([e[2] for e in batch])
+        new_states = np.asarray([e[3] for e in batch])
+        dones = np.asarray([e[4] for e in batch])
+        y_t = np.asarray([e[1] for e in batch])
+
+        target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
+       
+        for k in range(len(batch)):
+            if dones[k]:
+                y_t[k] = rewards[k]
+            else:
+                y_t[k] = rewards[k] + GAMMA*target_q_values[k]
+   
+        if (train_indicator):
+            loss += critic.model.train_on_batch([states,actions], y_t) 
+            a_for_grad = actor.model.predict(states)
+            grads = critic.gradients(states, a_for_grad)
+            actor.train(states, grads)
+            actor.target_train()
+            critic.target_train()
+
+        total_reward += r_t
+        s_t = s_t1
+    
+        print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
+        print("")
+    
+        step += 1
+        if done:
+            break
+
+    stop_sim()
+
+    print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
+    print("Total Step: " + str(step))
+    print("")
+    
+    return step, epsilon
         
     
         
@@ -1030,16 +1147,16 @@ clientID = 0
 
 scene_name = 'epuck_arena_multi_1extra'
 open_vrep = True
-vrep_port = 19997
+vrep_port = 19994
 headless =  True
 run_validation = True
 validation_runs = 50
 
-load_weights = False
+load_weights = True
 ckpt_folder = 'weight_archive'
-ckpt_date = '2018-08-24'
-ckpt_ep = 1200
-ckpt_step = 263464
+ckpt_date = '2018-09-09'
+ckpt_ep = 400
+ckpt_step = 65827
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 
 laser_sens = True #default is 'radar' sens
@@ -1087,216 +1204,105 @@ actor = ActorNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRA)
 critic = CriticNetwork(sess, state_dim, action_dim, BATCH_SIZE, TAU, LRC)
 buff = ReplayBuffer(BUFFER_SIZE)    #Create replay buffer
 
-sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
-f = open(sr_record_filename,"w+")
+if train_indicator and ep==1:
+    sr_record_filename = 'performance_record-' + str(ckpt_date) + '-' + str(vrep_port) + '.csv'
+    f = open(sr_record_filename,"w+")
+    
+    info = 'Laser Sensor:,' + str(laser_sens) + '\n \n' + 'Number of ePucks:,' + str(number_epucks) + '\n' + 'Number of obstacles:,' + str(number_obstacles) + '\n \n' + 'Angular Velocity Noise Hypers:,' + str(noise_hps[0,0]) + ',' + str(noise_hps[0,1]) + ',' + str(noise_hps[0,2]) + '\n' + 'Linear Velocity Noise Hypers:,' + str(noise_hps[1,0]) + ',' + str(noise_hps[1,1]) + ',' + str(noise_hps[1,2]) + '\n' + 'egoPuck Max Velocity:,' + str(max_vel[0]) + ',' + str(max_vel[1]) + '\n' + 'Reward Multipliers:,' + str(reward_weights[0]) + ',' + str(reward_weights[1]) + ',' + str(reward_weights[2]) + ',' + str(reward_weights[3]) + ',' + str(reward_weights[4]) +  '\n \n' + 'Checkpoint, Success Ratio, Average Reward, Reward Std Dev, '
+    for i in range(validation_runs):
+        info = info + ',Trial ' + str(i)
+    info += '\n'
+    
+    f.write(info)
+    f.close()
 
-info = 'Laser Sensor:,' + str(laser_sens) + '\n \n' + 'Number of ePucks:,' + str(number_epucks) + '\n' + 'Number of obstacles:,' + str(number_obstacles) + '\n \n' + 'Angular Velocity Noise Hypers:,' + str(noise_hps[0,0]) + ',' + str(noise_hps[0,1]) + ',' + str(noise_hps[0,2]) + '\n' + 'Linear Velocity Noise Hypers:,' + str(noise_hps[1,0]) + ',' + str(noise_hps[1,1]) + ',' + str(noise_hps[1,2]) + '\n' + 'egoPuck Max Velocity:,' + str(max_vel[0]) + ',' + str(max_vel[1]) + '\n' + 'Reward Multipliers:,' + str(reward_weights[0]) + ',' + str(reward_weights[1]) + ',' + str(reward_weights[2]) + ',' + str(reward_weights[3]) + ',' + str(reward_weights[4]) +  '\n \n' + 'Checkpoint, Success Ratio, Average Reward, Reward Std Dev, '
-for i in range(validation_runs):
-    info = info + ',Trial ' + str(i)
-info += '\n'
+#while ep <= episode_count:
 
-f.write(info)
-f.close()
+# Open vrep and start comms
+if open_vrep:
+    initialise_vrep(scene_name, vrep_port, headless)
+    clientID = setup_vrep_comms(vrep_port)
+    
+    epucks = None
+    epucks = create_epucks(number_epucks, True)
+    ego_puck = epuck(0, True)    
+    obstacles = create_obstacles(number_obstacles)
+    objects = np.concatenate((np.array(obstacles), np.array(epucks)))
+    
+    dummy_handle = get_dummy_handle()    
+    target_dummy = dummy(dummy_handle,0.05)
 
-while ep <= episode_count:
+if load_weights:
+    #Now load the weight
+    print("Now we load the weight")
+    try:
+        actor.model.load_weights(ckpt_path + "actormodel.h5")
+        critic.model.load_weights(ckpt_path + "criticmodel.h5")
+        actor.target_model.load_weights(ckpt_path + "actormodel.h5")
+        critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
+        pickle_off = open(ckpt_path + "buff.pickle","rb")
+        buff = pickle.load(pickle_off)
+        print("Weight load successfully")
+    except:
+        print("Cannot find the weight")
 
-    # Open vrep and start comms
-    if open_vrep:
-        initialise_vrep(scene_name, vrep_port, headless)
-        clientID = setup_vrep_comms(vrep_port)
-        
-        epucks = None
-        epucks = create_epucks(number_epucks, True)
-        ego_puck = epuck(0, True)    
-        obstacles = create_obstacles(number_obstacles)
-        objects = np.concatenate((np.array(obstacles), np.array(epucks)))
-        
-        dummy_handle = get_dummy_handle()    
-        target_dummy = dummy(dummy_handle,0.05)
+print("Experiment Start.")
+ckpt_ep_set = ckpt_ep
+while (ep <= episode_count):
     
-    if load_weights:
-        #Now load the weight
-        print("Now we load the weight")
-        try:
-            actor.model.load_weights(ckpt_path + "actormodel.h5")
-            critic.model.load_weights(ckpt_path + "criticmodel.h5")
-            actor.target_model.load_weights(ckpt_path + "actormodel.h5")
-            critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
-            pickle_off = open(ckpt_path + "buff.pickle","rb")
-            buff = pickle.load(pickle_off)
-            print("Weight load successfully")
-        except:
-            print("Cannot find the weight")
-    
-    print("Experiment Start.")
-    ckpt_ep_set = ckpt_ep
-    while (ep <= ckpt_ep_set+200):
-        
-        if epsilon <= 0:
-            epsilon = 1.0
-        
-        time.sleep(2)
-    
-        print("Episode : " + str(ep) + ", Replay Buffer " + str(buff.count()))
-    
-        number_active_epucks = np.random.randint(number_epucks+1)
-        number_active_obstacles = np.random.randint(number_obstacles+1)
-        
-        start_positions = calculate_positions(map_points, number_active_epucks+2, 0.2)
-        target_position = start_positions[len(start_positions)-1,:]
-        
-        for robot in epucks:
-            x_pos = -1.0-float(robot.i)/10
-            robot.set_pos([x_pos, 1])
-            robot.set_vel(0,0)
-    
-        reset_epucks(epucks, number_active_epucks, start_positions)
-        
-        target_dummy.set_pos(target_position)
-        
-        radii = [0.05]*(number_epucks+2) 
-        for obs in obstacles:
-            radii.append(obs.radius)
-            
-        reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
-        
-        reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
-        
-        if number_active_epucks != 0:
-            t = [None]*(number_active_epucks)
-    
-        start_sim()
-        
-        time.sleep(1)
-        
-        for i in range(number_active_epucks):
-            robot_velocity = np.random.gumbel(0.1,0.02)
-            t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
-            
-        for i in range(number_active_epucks):
-            t[i].start()
-        
-        ego_puck.sensor_sweep(objects)
-        
-        if laser_sens:
-            ego_puck.laser_sensor_sweep()
-            
-        ego_puck.nn_input = np.concatenate((ego_puck.nn_input, [0]))
-        
-        ego_puck.distance_reward = ego_puck.calc_distance_reward(do_exp[0])
-        ego_puck.calc_distance_to_objects_reward(do_exp[1])
-        
-        s_t = ego_puck.nn_input
-     
-        total_reward = 0.
-        for j in range(1, max_steps):
-            loss = 0 
-            epsilon -= 1.0 / EXPLORE
-            a_t = np.zeros([1,action_dim])
-            noise_t = np.zeros([1,action_dim])
-            
-            a_t_original = actor.model.predict(s_t.reshape(1, s_t.shape[0]))
-            noise_t[0][0] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][0],  noise_hps[0,0] , noise_hps[0,1] , noise_hps[0,2])
-            noise_t[0][1] = train_indicator * max(epsilon, 0) * OU.function(a_t_original[0][1],  noise_hps[1,0] , noise_hps[1,1] , noise_hps[1,2])
-    
-            a_t[0][0] = a_t_original[0][0] + noise_t[0][0]
-            a_t[0][1] = a_t_original[0][1] + noise_t[0][1]
-    
-            done = ego_puck.step(a_t[0], objects, reward_weights, j, 0.2, do_exp, max_vel, laser_sens, 0.1)
-            s_t1 = ego_puck.nn_input
-            r_t = ego_puck.step_reward
-        
-            buff.add(s_t, a_t[0], r_t, s_t1, done)      #Add replay buffer
-            
-            #Do the batch update
-            batch = buff.getBatch(BATCH_SIZE)
-            states = np.asarray([e[0] for e in batch])
-            actions = np.asarray([e[1] for e in batch])
-            rewards = np.asarray([e[2] for e in batch])
-            new_states = np.asarray([e[3] for e in batch])
-            dones = np.asarray([e[4] for e in batch])
-            y_t = np.asarray([e[1] for e in batch])
-    
-            target_q_values = critic.target_model.predict([new_states, actor.target_model.predict(new_states)])  
-           
-            for k in range(len(batch)):
-                if dones[k]:
-                    y_t[k] = rewards[k]
-                else:
-                    y_t[k] = rewards[k] + GAMMA*target_q_values[k]
-       
-            if (train_indicator):
-                loss += critic.model.train_on_batch([states,actions], y_t) 
-                a_for_grad = actor.model.predict(states)
-                grads = critic.gradients(states, a_for_grad)
-                actor.train(states, grads)
-                actor.target_train()
-                critic.target_train()
-    
-            total_reward += r_t
-            s_t = s_t1
-        
-            print("Episode", ep, "Step", step, "Action", a_t, "Reward", r_t, "Loss", loss)
-            print("")
-        
-            step += 1
-            if done:
-                break
+    if epsilon <= 0:
+        epsilon = 1.0
 
-        stop_sim()
-    
-        if np.mod(ep, 50) == 0:
-            if (train_indicator):
-                print("Now we save model")
-                actor.model.save_weights("actormodel.h5", overwrite=True)
-                with open("actormodel.json", "w") as outfile:
-                    json.dump(actor.model.to_json(), outfile)
-    
-                critic.model.save_weights("criticmodel.h5", overwrite=True)
-                with open("criticmodel.json", "w") as outfile:
-                    json.dump(critic.model.to_json(), outfile)
-                    
-        if np.mod(ep, 50) == 0 and ep !=0:
-            if (train_indicator):
-                print("Creating model checkpoint")
-                ckpt_date = datetime.date.today()
-                ckpt_ep = ep
-                ckpt_step = step
-                ckpt_path = 'weight_archive/'+ str(ckpt_date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
-                os.makedirs(ckpt_path)
-                copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
-                copyfile('actormodel.json', ckpt_path + 'actormodel.json')
-                copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
-                copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
+    time.sleep(2)
+        
+    step, epsilon = run_episode(step, epsilon)
                 
-                if np.mod(ep, 100) == 0:
-                    pickling_on = open("buff.pickle","wb")
-                    pickle.dump(buff, pickling_on)
-                    pickling_on.close()
-                    copyfile('buff.pickle', ckpt_path + 'buff.pickle')
-                    
-                    if run_validation and np.mod(ep, 200) == 0:
-                        success_ratio, reward_mean, reward_std, total_reward = validation_run(validation_runs)
-                        f = open(sr_record_filename,"a")
-                        record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + ','
-                        for a in total_reward:
-                            record = record + ',' + str(a)
-                        record += '\n'
-                        f.write(record)
-                        f.close()
-                        copyfile(sr_record_filename, ckpt_path + sr_record_filename)
-    
-        print("TOTAL REWARD @ " + str(ep) +"-th Episode  : Reward " + str(total_reward))
-        print("Total Step: " + str(step))
-        print("")
-        
-        ep+=1
-    
-    print('Quiting VREP')
-    
-    load_weights = True
-    quit_vrep()
-    time.sleep(15)
+    if np.mod(ep, 50) == 0 and ep !=0:
+        if (train_indicator):
+            print("Now we save model")
+            actor.model.save_weights("actormodel.h5", overwrite=True)
+            with open("actormodel.json", "w") as outfile:
+                json.dump(actor.model.to_json(), outfile)
+
+            critic.model.save_weights("criticmodel.h5", overwrite=True)
+            with open("criticmodel.json", "w") as outfile:
+                json.dump(critic.model.to_json(), outfile)
+                
+            print("Creating model checkpoint")
+            ckpt_date = datetime.date.today()
+            ckpt_ep = ep
+            ckpt_step = step
+            ckpt_path = 'weight_archive/'+ str(ckpt_date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
+            os.makedirs(ckpt_path)
+            copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
+            copyfile('actormodel.json', ckpt_path + 'actormodel.json')
+            copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
+            copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
+            
+            if np.mod(ep, 100) == 0:
+                pickling_on = open("buff.pickle","wb")
+                pickle.dump(buff, pickling_on)
+                pickling_on.close()
+                copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+                
+                if run_validation and np.mod(ep, 200) == 0:
+                    success_ratio, reward_mean, reward_std, total_reward = validation_run(validation_runs)
+                    f = open(sr_record_filename,"a")
+                    record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + ','
+                    for a in total_reward:
+                        record = record + ',' + str(a)
+                    record += '\n'
+                    f.write(record)
+                    f.close()
+                    copyfile(sr_record_filename, ckpt_path + sr_record_filename)
+
+    ep+=1
+         
+print('Quiting VREP')
+
+load_weights = True
+quit_vrep()
+time.sleep(15)
 
 print("Finish.")
 
