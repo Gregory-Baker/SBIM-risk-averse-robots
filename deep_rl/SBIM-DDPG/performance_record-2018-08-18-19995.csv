@@ -1,5 +1,0 @@
-Laser Sensor:,False
-Angular Velocity Noise Hyperparameters:,0.0,0.7,0.5
-Linear Velocity Noise Hyperparameters:,0.15,1.0,0.03
-Number of ePucks:,6
-Number of obstacles:,5

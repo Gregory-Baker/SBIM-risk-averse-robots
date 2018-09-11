@@ -910,27 +910,23 @@ def validation_run(number_validation_episodes):
         reset_epucks(epucks, number_active_epucks, start_positions)
     
         target_dummy.set_pos(target_position)
-        
-        radii = [0.05]*(number_epucks+2) 
-        for obs in obstacles:
-            radii.append(obs.radius)
             
         reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
         
         reset_ego_puck(ego_puck, start_positions, target_position, number_epucks, number_obstacles, number_active_epucks)
         
-        t = [None]*(number_active_epucks)
+#        t = [None]*(number_active_epucks)
     
         start_sim()
         
         time.sleep(1)
         
-        for i in range(number_active_epucks):
-            robot_velocity = np.random.gumbel(0.1,0.02)
-            t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
-            
-        for i in range(number_active_epucks):
-            t[i].start()
+#        for i in range(number_active_epucks):
+#            robot_velocity = np.random.gumbel(0.1,0.02)
+#            t[i] = threading.Thread(target = epucks[i].random_walk, args = (robot_velocity,))
+#            
+#        for i in range(number_active_epucks):
+#            t[i].start()
         
         ego_puck.sensor_sweep(objects)
         
@@ -1003,10 +999,6 @@ def run_episode(step, epsilon):
     reset_epucks(epucks, number_active_epucks, start_positions)
     
     target_dummy.set_pos(target_position)
-    
-    radii = [0.05]*(number_epucks+2) 
-    for obs in obstacles:
-        radii.append(obs.radius)
         
     reset_obstacles(obstacles, number_active_obstacles, start_positions, map_points, radii)
     
@@ -1147,25 +1139,25 @@ clientID = 0
 
 scene_name = 'epuck_arena_multi_1extra'
 open_vrep = True
-vrep_port = 19994
+vrep_port = 19989
 headless =  True
 run_validation = True
 validation_runs = 50
 
-load_weights = True
+load_weights = False
 ckpt_folder = 'weight_archive'
 ckpt_date = '2018-09-09'
 ckpt_ep = 400
 ckpt_step = 65827
 ckpt_path = ckpt_folder + '/' + ckpt_date + '/' + str(vrep_port) + '/' + str(ckpt_ep) + '-' + str(ckpt_step) + '/'
 
-laser_sens = True #default is 'radar' sens
+laser_sens = False #default is 'radar' sens
 
 # Noise hyperparameters for OU function. [[Ang velocity], [Lin velocity]]
 noise_hps = np.array([[0.0 , 0.7, 0.5], [0.15 , 1.0, 0.03]])
 
 # [Step penalty, distance_to_target, distance_to_objects, completion, crash]
-reward_weights = np.array([0.01, 100, 3, 200, 200])
+reward_weights = np.array([0.01, 0, 0, 200, 200])
 
 # ego_puck maximum linear and angular velocities
 max_vel = [0.3,1.2]
@@ -1216,93 +1208,97 @@ if train_indicator and ep==1:
     f.write(info)
     f.close()
 
-#while ep <= episode_count:
-
-# Open vrep and start comms
-if open_vrep:
-    initialise_vrep(scene_name, vrep_port, headless)
-    clientID = setup_vrep_comms(vrep_port)
+while ep <= episode_count:
     
-    epucks = None
-    epucks = create_epucks(number_epucks, True)
-    ego_puck = epuck(0, True)    
-    obstacles = create_obstacles(number_obstacles)
-    objects = np.concatenate((np.array(obstacles), np.array(epucks)))
-    
-    dummy_handle = get_dummy_handle()    
-    target_dummy = dummy(dummy_handle,0.05)
-
-if load_weights:
-    #Now load the weight
-    print("Now we load the weight")
-    try:
-        actor.model.load_weights(ckpt_path + "actormodel.h5")
-        critic.model.load_weights(ckpt_path + "criticmodel.h5")
-        actor.target_model.load_weights(ckpt_path + "actormodel.h5")
-        critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
-        pickle_off = open(ckpt_path + "buff.pickle","rb")
-        buff = pickle.load(pickle_off)
-        print("Weight load successfully")
-    except:
-        print("Cannot find the weight")
-
-print("Experiment Start.")
-ckpt_ep_set = ckpt_ep
-while (ep <= episode_count):
-    
-    if epsilon <= 0:
-        epsilon = 1.0
-
-    time.sleep(2)
+    # Open vrep and start comms
+    if open_vrep:
+        initialise_vrep(scene_name, vrep_port, headless)
+        clientID = setup_vrep_comms(vrep_port)
         
-    step, epsilon = run_episode(step, epsilon)
-                
-    if np.mod(ep, 50) == 0 and ep !=0:
-        if (train_indicator):
-            print("Now we save model")
-            actor.model.save_weights("actormodel.h5", overwrite=True)
-            with open("actormodel.json", "w") as outfile:
-                json.dump(actor.model.to_json(), outfile)
-
-            critic.model.save_weights("criticmodel.h5", overwrite=True)
-            with open("criticmodel.json", "w") as outfile:
-                json.dump(critic.model.to_json(), outfile)
-                
-            print("Creating model checkpoint")
-            ckpt_date = datetime.date.today()
-            ckpt_ep = ep
-            ckpt_step = step
-            ckpt_path = 'weight_archive/'+ str(ckpt_date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
-            os.makedirs(ckpt_path)
-            copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
-            copyfile('actormodel.json', ckpt_path + 'actormodel.json')
-            copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
-            copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
+        epucks = None
+        epucks = create_epucks(number_epucks, True)
+        ego_puck = epuck(0, True)    
+        obstacles = create_obstacles(number_obstacles)
+        objects = np.concatenate((np.array(obstacles), np.array(epucks)))
+        
+        radii = [0.05]*(number_epucks+2) 
+        for obs in obstacles:
+            radii.append(obs.radius)
+        
+        dummy_handle = get_dummy_handle()    
+        target_dummy = dummy(dummy_handle,0.05)
+    
+    if load_weights:
+        #Now load the weight
+        print("Now we load the weight")
+        try:
+            actor.model.load_weights(ckpt_path + "actormodel.h5")
+            critic.model.load_weights(ckpt_path + "criticmodel.h5")
+            actor.target_model.load_weights(ckpt_path + "actormodel.h5")
+            critic.target_model.load_weights(ckpt_path + "criticmodel.h5")
+            pickle_off = open(ckpt_path + "buff.pickle","rb")
+            buff = pickle.load(pickle_off)
+            print("Weight load successfully")
+        except:
+            print("Cannot find the weight")
+    
+    print("Experiment Start.")
+    ckpt_ep_set = ckpt_ep
+    while (ep <= ckpt_ep_set+400):
+        
+        if epsilon <= 0:
+            epsilon = 1.0
+    
+        time.sleep(2)
             
-            if np.mod(ep, 100) == 0:
-                pickling_on = open("buff.pickle","wb")
-                pickle.dump(buff, pickling_on)
-                pickling_on.close()
-                copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+        step, epsilon = run_episode(step, epsilon)
+                    
+        if np.mod(ep, 50) == 0 and ep !=0:
+            if (train_indicator):
+                print("Now we save model")
+                actor.model.save_weights("actormodel.h5", overwrite=True)
+                with open("actormodel.json", "w") as outfile:
+                    json.dump(actor.model.to_json(), outfile)
+    
+                critic.model.save_weights("criticmodel.h5", overwrite=True)
+                with open("criticmodel.json", "w") as outfile:
+                    json.dump(critic.model.to_json(), outfile)
+                    
+                print("Creating model checkpoint")
+                ckpt_date = datetime.date.today()
+                ckpt_ep = ep
+                ckpt_step = step
+                ckpt_path = 'weight_archive/'+ str(ckpt_date) + '/' + str(vrep_port) + '/' + str(ep) + '-' + str(step) + '/'
+                os.makedirs(ckpt_path)
+                copyfile('actormodel.h5', ckpt_path + 'actormodel.h5')
+                copyfile('actormodel.json', ckpt_path + 'actormodel.json')
+                copyfile('criticmodel.h5', ckpt_path + 'criticmodel.h5')
+                copyfile('criticmodel.json', ckpt_path + 'criticmodel.json')
                 
-                if run_validation and np.mod(ep, 200) == 0:
-                    success_ratio, reward_mean, reward_std, total_reward = validation_run(validation_runs)
-                    f = open(sr_record_filename,"a")
-                    record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + ','
-                    for a in total_reward:
-                        record = record + ',' + str(a)
-                    record += '\n'
-                    f.write(record)
-                    f.close()
-                    copyfile(sr_record_filename, ckpt_path + sr_record_filename)
-
-    ep+=1
-         
-print('Quiting VREP')
-
-load_weights = True
-quit_vrep()
-time.sleep(15)
+                if np.mod(ep, 200) == 0:
+                    pickling_on = open("buff.pickle","wb")
+                    pickle.dump(buff, pickling_on)
+                    pickling_on.close()
+                    copyfile('buff.pickle', ckpt_path + 'buff.pickle')
+                    
+                    if run_validation and np.mod(ep, 200) == 0:
+                        success_ratio, reward_mean, reward_std, total_reward = validation_run(validation_runs)
+                        f = open(sr_record_filename,"a")
+                        record = str(ep) + ', ' + str(success_ratio) + ', ' + str(reward_mean)+ ', ' + str(reward_std) + ','
+                        for a in total_reward:
+                            record = record + ',' + str(a)
+                        record += '\n'
+                        f.write(record)
+                        f.close()
+                        copyfile(sr_record_filename, ckpt_path + sr_record_filename)
+    
+        ep+=1
+             
+    print('Quiting VREP')
+    
+    load_weights = True
+    quit_vrep()
+    time.sleep(15)
 
 print("Finish.")
 
