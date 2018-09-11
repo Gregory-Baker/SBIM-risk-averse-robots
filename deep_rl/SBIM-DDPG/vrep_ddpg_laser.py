@@ -1139,7 +1139,7 @@ clientID = 0
 
 scene_name = 'epuck_arena_multi_1extra'
 open_vrep = True
-vrep_port = 19989
+vrep_port = 19984
 headless =  True
 run_validation = True
 validation_runs = 50
